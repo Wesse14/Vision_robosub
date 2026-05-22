@@ -1,0 +1,25 @@
+[project]
+name = "async-processor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "ipykernel>=7.2.0",
+    "ipywidgets>=8.1.8",
+    "joblib>=1.5.3",
+    "numpy>=2.4.6",
+    "opencv-python>=4.13.0.92",
+    "orjson>=3.11.9",
+    "pandas>=3.0.3",
+    "pillow>=12.2.0",
+    "scikit-learn>=1.8.0",
+    "scipy>=1.17.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+[tool.pytest.ini_options]
+pythonpath = ["."]
