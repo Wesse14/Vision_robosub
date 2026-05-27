@@ -2,6 +2,8 @@ from .logging_config import ColorFormatter, configure_logging
 from .loop import EmptyInputSource, InputSource, ProcessorLoop, SignalStopper
 from .messages import Message, RoutedMessage
 from .modules import (
+    ArucoDetection,
+    ArucoDetectionModule,
     BaseModule,
     FrameRateLoggerModule,
     GMMColorMaskModule,
@@ -22,6 +24,8 @@ from .processor import (
 
 __all__ = [
     "AsyncProcessor",
+    "ArucoDetection",
+    "ArucoDetectionModule",
     "BaseModule",
     "ColorFormatter",
     "DuplicateModuleError",

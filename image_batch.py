@@ -13,6 +13,7 @@ import numpy as np
 
 from src import (
     AsyncProcessor,
+    ArucoDetectionModule,
     GMMColorMaskModule,
     ImageEnhancementModule,
     MarkerRectificationModule,
@@ -29,7 +30,7 @@ DEFAULT_VIDEO_DIR = Path("data/test_videos")
 DEFAULT_GMM_MODEL_PATH = Path("data/color_classifier_gmm.joblib")
 SUPPORTED_EXTENSIONS = {".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 SUPPORTED_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mov", ".mp4", ".mpeg", ".mpg"}
-PIPELINES = ("enhance", "marker", "gmm", "full")
+PIPELINES = ("enhance", "marker", "aruco", "gmm", "full")
 GENERATED_FRAME_PREFIX = "video_frame__"
 
 
@@ -246,7 +247,9 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
         message = enhanced.message
         write_image(output_dir / "01_enhanced.png", message.payload.image)
 
-    if args.pipeline in {"marker", "full"}:
+    marker_image = None
+    marker_message = None
+    if args.pipeline in {"marker", "aruco", "full"}:
         marker = MarkerRectificationModule(
             name="marker-rectifier",
             input_queue="frames",
@@ -265,6 +268,25 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
                 else marker_payload
             )
             write_image(output_dir / "02_marker_cutout.png", marker_image)
+            marker_message = marker_result.message
+
+    if args.pipeline in {"aruco", "full"} and marker_image is not None and marker_message is not None:
+        aruco = ArucoDetectionModule(
+            name="aruco-detector",
+            input_queue="marker_cutouts",
+            output_queue="aruco_detections",
+            debug=args.debug,
+            debug_dir=debug_dir / "aruco",
+        )
+        aruco_result = await aruco.process(marker_message, context)
+        write_image(
+            output_dir / "03_aruco_detected.png",
+            aruco_result.message.payload.annotated_image,
+        )
+        write_image(
+            output_dir / "04_aruco_high_contrast_retry.png",
+            aruco_result.message.payload.high_contrast_annotated_image,
+        )
 
     if args.pipeline in {"gmm", "full"}:
         if not args.gmm_model_path.exists():
@@ -283,7 +305,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
                 debug_dir=debug_dir / "gmm",
             )
             gmm_result = await gmm.process(message, context)
-            write_image(output_dir / "03_color_mask.png", gmm_result.message.payload)
+            write_image(output_dir / "05_color_mask.png", gmm_result.message.payload)
 
     logger.info("Processed %s -> %s", path, output_dir)
 

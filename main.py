@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from src import (
+    ArucoDetectionModule,
     AsyncProcessor,
     FrameRateLoggerModule,
     GMMColorMaskModule,
@@ -26,6 +27,7 @@ DEFAULT_VIDEO_PATH = (
 FRAME_QUEUE = "frames"
 ENHANCED_FRAME_QUEUE = "enhanced_frames"
 MARKER_CUTOUT_QUEUE = "marker_cutouts"
+ARUCO_DETECTION_QUEUE = "aruco_detections"
 GMM_MODEL_PATH = Path("data/color_classifier_gmm.joblib")
 GMM_FRAME_QUEUE = "gmm_frames"
 MARKER_FRAME_QUEUE = "marker_frames"
@@ -78,6 +80,7 @@ async def run_app(args: argparse.Namespace) -> None:
     processor.create_queue(FRAME_QUEUE, maxsize=args.queue_size)
     processor.create_queue(ENHANCED_FRAME_QUEUE, maxsize=args.queue_size)
     processor.create_queue(MARKER_CUTOUT_QUEUE, maxsize=args.queue_size)
+    processor.create_queue(ARUCO_DETECTION_QUEUE, maxsize=args.queue_size)
     if gmm_model_exists:
         processor.create_queue(MARKER_FRAME_QUEUE, maxsize=args.queue_size)
         processor.create_queue(GMM_FRAME_QUEUE, maxsize=args.queue_size)
@@ -122,9 +125,18 @@ async def run_app(args: argparse.Namespace) -> None:
         )
     )
     processor.register_module(
+        ArucoDetectionModule(
+            name="aruco-detector",
+            input_queue=MARKER_CUTOUT_QUEUE,
+            output_queue=ARUCO_DETECTION_QUEUE,
+            debug=args.debug,
+            debug_dir=Path("data/debug"),
+        )
+    )
+    processor.register_module(
         FrameRateLoggerModule(
             name="frame-rate-logger",
-            input_queue=MARKER_CUTOUT_QUEUE,
+            input_queue=ARUCO_DETECTION_QUEUE,
         )
     )
 

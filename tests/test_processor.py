@@ -584,6 +584,23 @@ def make_synthetic_marker_image() -> np.ndarray:
     return image
 
 
+def make_synthetic_marker_with_yellow_pipe() -> np.ndarray:
+    image = make_synthetic_marker_image()
+    cv2.line(image, (20, 330), (460, 35), (0, 220, 255), 42, cv2.LINE_AA)
+    marker_quad = np.array(
+        [[95, 70], [380, 95], [350, 315], [120, 290]],
+        dtype=np.int32,
+    )
+    inner_quad = np.array(
+        [[150, 125], [320, 135], [305, 245], [160, 240]],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(image, marker_quad, (20, 20, 20))
+    cv2.fillConvexPoly(image, inner_quad, (240, 240, 240))
+    cv2.polylines(image, [marker_quad], True, (0, 0, 0), 8, cv2.LINE_AA)
+    return image
+
+
 def marker_debug_paths(debug_dir: Path) -> list[Path]:
     return [
         debug_dir / "marker_input.png",
@@ -864,6 +881,26 @@ def test_marker_rectification_module_outputs_rectified_cutout() -> None:
         assert "quad" in routed.message.metadata
         assert "score" in routed.message.metadata
         assert routed.message.metadata["input_shape"] == (360, 480, 3)
+
+    asyncio.run(scenario())
+
+
+def test_marker_rectification_ignores_yellow_pipe_edges() -> None:
+    async def scenario() -> None:
+        module = MarkerRectificationModule(
+            name="rectifier",
+            input_queue="frames",
+            output_queue="cutouts",
+        )
+
+        routed = await module.process(Message(make_synthetic_marker_with_yellow_pipe()), AsyncProcessor())
+
+        assert routed is not None
+        quad = np.asarray(routed.message.metadata["quad"], dtype=np.float32)
+        center = np.mean(quad, axis=0)
+        assert 180 <= center[0] <= 300
+        assert 150 <= center[1] <= 230
+        assert routed.message.payload.shape == (512, 512, 3)
 
     asyncio.run(scenario())
 
