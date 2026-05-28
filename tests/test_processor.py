@@ -14,6 +14,7 @@ import pytest
 import main as app_main
 
 from src.modules.marker_rectifier import refine_candidate
+from src.modules.marker_rectifier import is_valid_quad
 
 from src import (
     AsyncProcessor,
@@ -630,6 +631,15 @@ def test_marker_candidate_refinement_clips_initial_guess_to_bounds() -> None:
     assert np.all(refined[:, 0] <= 119)
     assert np.all(refined[:, 1] >= 0)
     assert np.all(refined[:, 1] <= 99)
+
+
+def test_marker_quad_validation_rejects_nearly_triangular_shapes() -> None:
+    bad_quad = np.array(
+        [[80, 80], [360, 92], [355, 104], [90, 300]],
+        dtype=np.float32,
+    )
+
+    assert not is_valid_quad(bad_quad, width=480, height=360, min_area=400.0)
 
 
 def test_marker_rectification_debug_disabled_does_not_create_debug_files(tmp_path: Path) -> None:

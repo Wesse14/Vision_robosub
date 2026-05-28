@@ -268,6 +268,35 @@ def edge_lengths(quad: np.ndarray) -> np.ndarray:
     return np.linalg.norm(np.roll(quad, -1, axis=0) - quad, axis=1)
 
 
+def interior_angles_deg(quad: np.ndarray) -> np.ndarray:
+    quad = order_corners(quad)
+    angles: list[float] = []
+    for idx in range(4):
+        prev_pt = quad[(idx - 1) % 4]
+        pt = quad[idx]
+        next_pt = quad[(idx + 1) % 4]
+        v0 = prev_pt - pt
+        v1 = next_pt - pt
+        denom = max(float(np.linalg.norm(v0) * np.linalg.norm(v1)), 1e-6)
+        cos_angle = float(np.clip(np.dot(v0, v1) / denom, -1.0, 1.0))
+        angles.append(math.degrees(math.acos(cos_angle)))
+    return np.asarray(angles, dtype=np.float32)
+
+
+def quad_shape_penalty(quad: np.ndarray) -> float:
+    lengths = edge_lengths(quad)
+    if np.min(lengths) < 1e-3:
+        return 1e3
+    angles = interior_angles_deg(quad)
+    side_ratio = float(np.max(lengths) / max(np.min(lengths), 1e-6))
+    opposite_ratio_a = float(max(lengths[0], lengths[2]) / max(min(lengths[0], lengths[2]), 1e-6))
+    opposite_ratio_b = float(max(lengths[1], lengths[3]) / max(min(lengths[1], lengths[3]), 1e-6))
+    angle_penalty = float(np.sum(np.maximum(0.0, 40.0 - angles) + np.maximum(0.0, angles - 140.0))) * 0.35
+    side_penalty = max(0.0, side_ratio - 4.0) * 4.0
+    opposite_penalty = (max(0.0, opposite_ratio_a - 3.5) + max(0.0, opposite_ratio_b - 3.5)) * 3.0
+    return angle_penalty + side_penalty + opposite_penalty
+
+
 def is_valid_quad(quad: np.ndarray, width: int, height: int, min_area: float) -> bool:
     quad = order_corners(quad)
     if quad.shape != (4, 2):
@@ -283,10 +312,16 @@ def is_valid_quad(quad: np.ndarray, width: int, height: int, min_area: float) ->
     if not is_convex_quad(quad):
         return False
     lengths = edge_lengths(quad)
-    if np.min(lengths) < 8:
+    min_edge = max(8.0, min(width, height) * 0.025)
+    if float(np.min(lengths)) < min_edge:
+        return False
+    if float(np.max(lengths) / max(np.min(lengths), 1e-6)) > 5.0:
+        return False
+    angles = interior_angles_deg(quad)
+    if float(np.min(angles)) < 35.0 or float(np.max(angles)) > 145.0:
         return False
     skinny = polygon_area(quad) / max(float(np.sum(lengths) ** 2), 1.0)
-    if skinny < 0.005:
+    if skinny < 0.012:
         return False
     return True
 
@@ -638,6 +673,7 @@ def rectification_penalty(quad: np.ndarray) -> float:
     compactness = area / max(diag * diag, 1.0)
     penalty = max(0.0, ratio - 8.0) * 0.5
     penalty += max(0.0, 0.08 - compactness) * 20.0
+    penalty += quad_shape_penalty(quad)
     return penalty
 
 
@@ -753,12 +789,18 @@ def refine_candidate(
 
         area = polygon_area(quad)
         lengths = edge_lengths(quad)
+        angles = interior_angles_deg(quad)
+        side_ratio = float(np.max(lengths) / max(np.min(lengths), 1e-6))
         convex_penalty = 50.0 if not is_convex_quad(quad) else 0.0
         area_penalty = math.sqrt(max(min_area - area, 0.0))
         length_penalty = 20.0 if np.min(lengths) < 8.0 else 0.0
+        angle_penalty = float(np.sum(np.maximum(0.0, 35.0 - angles) + np.maximum(0.0, angles - 145.0)))
+        side_ratio_penalty = max(0.0, side_ratio - 5.0) * 10.0
         residual.extend([convex_penalty] * 12)
         residual.extend([area_penalty] * 12)
         residual.extend([length_penalty] * 8)
+        residual.extend([angle_penalty] * 4)
+        residual.extend([side_ratio_penalty] * 4)
 
         residual.extend(((quad - initial_quad).reshape(-1) * reg_weight).tolist())
         return np.asarray(residual, dtype=np.float32)

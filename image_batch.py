@@ -5,6 +5,7 @@ import asyncio
 import logging
 import random
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
@@ -21,6 +22,7 @@ from src import (
     VideoFrame,
     configure_logging,
 )
+from src.modules.image_enhancer import apply_enhancement
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +211,81 @@ def write_image(path: Path, image: np.ndarray) -> None:
         raise RuntimeError(f"Could not write image: {path}")
 
 
+def payload_image(payload: VideoFrame | np.ndarray) -> np.ndarray:
+    return payload.image if isinstance(payload, VideoFrame) else payload
+
+
+def message_with_image(
+    message: Message[VideoFrame | np.ndarray],
+    image: np.ndarray,
+    attempt: str,
+) -> Message[VideoFrame | np.ndarray]:
+    payload = message.payload
+    next_payload: VideoFrame | np.ndarray
+    if isinstance(payload, VideoFrame):
+        next_payload = replace(payload, image=image)
+    else:
+        next_payload = image
+    metadata = dict(message.metadata)
+    metadata["marker_preprocess_attempt"] = attempt
+    return Message(next_payload, metadata=metadata)
+
+
+def clahe_bgr(image: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(6, 6))
+    return cv2.cvtColor(
+        cv2.merge([clahe.apply(l_channel), a_channel, b_channel]),
+        cv2.COLOR_LAB2BGR,
+    )
+
+
+def high_contrast_bgr(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4, 4))
+    boosted = clahe.apply(gray)
+    sharpened = cv2.addWeighted(boosted, 2.0, cv2.GaussianBlur(boosted, (0, 0), 1.0), -1.0, 0)
+    _, binary = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
+
+def sharpen_bgr(image: np.ndarray) -> np.ndarray:
+    blurred = cv2.GaussianBlur(image, (0, 0), 1.2)
+    return cv2.addWeighted(image, 1.8, blurred, -0.8, 0)
+
+
+def marker_retry_messages(
+    original_message: Message[VideoFrame | np.ndarray],
+    current_message: Message[VideoFrame | np.ndarray],
+) -> list[Message[VideoFrame | np.ndarray]]:
+    original_image = payload_image(original_message.payload)
+    current_image = payload_image(current_message.payload)
+    retry_images = [
+        ("raw", original_image),
+        ("underwater", apply_enhancement(original_image, "underwater")),
+        ("clahe", clahe_bgr(original_image)),
+        ("high_contrast", high_contrast_bgr(original_image)),
+        ("sharpened", sharpen_bgr(original_image)),
+        ("current_clahe", clahe_bgr(current_image)),
+        ("current_high_contrast", high_contrast_bgr(current_image)),
+    ]
+
+    messages: list[Message[VideoFrame | np.ndarray]] = []
+    seen: set[bytes] = {current_image[:: max(current_image.shape[0] // 16, 1), :: max(current_image.shape[1] // 16, 1)].tobytes()}
+    for name, enhanced_image in retry_images:
+        signature = enhanced_image[
+            :: max(enhanced_image.shape[0] // 16, 1),
+            :: max(enhanced_image.shape[1] // 16, 1),
+        ].tobytes()
+        if signature in seen:
+            continue
+        seen.add(signature)
+        messages.append(message_with_image(original_message, enhanced_image, name))
+    return messages
+
+
 def clear_output_dir(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for path in output_dir.iterdir():
@@ -236,6 +313,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
         loop_count=0,
     )
     message = Message(frame, metadata={"source_path": str(path)})
+    original_message = message
 
     if args.pipeline in {"enhance", "full"}:
         enhancer = ImageEnhancementModule(
@@ -259,8 +337,24 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
         )
         marker_result = await marker.process(message, context)
         if marker_result is None:
-            logger.warning("No marker detected in %s", path)
-        else:
+            for retry_message in marker_retry_messages(original_message, message):
+                attempt = retry_message.metadata["marker_preprocess_attempt"]
+                logger.info("Retrying marker detection for %s with %s preprocessing", path, attempt)
+                marker = MarkerRectificationModule(
+                    name=f"marker-rectifier-{attempt}",
+                    input_queue="frames",
+                    output_queue="marker_cutouts",
+                    debug=args.debug,
+                    debug_dir=debug_dir / "marker",
+                )
+                marker_result = await marker.process(retry_message, context)
+                if marker_result is not None:
+                    logger.info("Marker detected in %s after %s preprocessing", path, attempt)
+                    break
+            if marker_result is None:
+                logger.warning("No marker detected in %s", path)
+
+        if marker_result is not None:
             marker_payload = marker_result.message.payload
             marker_image = (
                 marker_payload.image
@@ -269,6 +363,9 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             )
             write_image(output_dir / "02_marker_cutout.png", marker_image)
             marker_message = marker_result.message
+            attempt = marker_message.metadata.get("marker_preprocess_attempt", "initial")
+            if attempt != "initial":
+                write_image(output_dir / f"02_marker_cutout_{attempt}.png", marker_image)
 
     if args.pipeline in {"aruco", "full"} and marker_image is not None and marker_message is not None:
         aruco = ArucoDetectionModule(
@@ -286,6 +383,18 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
         write_image(
             output_dir / "04_aruco_high_contrast_retry.png",
             aruco_result.message.payload.high_contrast_annotated_image,
+        )
+        write_image(
+            output_dir / "05_aruco_mask_match.png",
+            aruco_result.message.payload.mask_match_image,
+        )
+        write_image(
+            output_dir / "06_aruco_grid.png",
+            aruco_result.message.payload.grid_image,
+        )
+        write_image(
+            output_dir / "07_aruco_grid_match.png",
+            aruco_result.message.payload.grid_match_image,
         )
 
     if args.pipeline in {"gmm", "full"}:
@@ -305,7 +414,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
                 debug_dir=debug_dir / "gmm",
             )
             gmm_result = await gmm.process(message, context)
-            write_image(output_dir / "05_color_mask.png", gmm_result.message.payload)
+            write_image(output_dir / "08_color_mask.png", gmm_result.message.payload)
 
     logger.info("Processed %s -> %s", path, output_dir)
 
