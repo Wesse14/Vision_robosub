@@ -37,6 +37,15 @@ def yellow_pipe_mask(image: np.ndarray) -> np.ndarray:
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
 
+def blue_water_mask(image: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower = np.array([85, 35, 45], dtype=np.uint8)
+    upper = np.array([135, 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+    kernel = np.ones((5, 5), np.uint8)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
 def suppress_masked_edges(gray: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if not np.any(mask):
         return gray
@@ -45,6 +54,19 @@ def suppress_masked_edges(gray: np.ndarray, mask: np.ndarray) -> np.ndarray:
     expanded = cv2.dilate(mask, np.ones((9, 9), np.uint8), iterations=1)
     suppressed[expanded > 0] = background
     return suppressed
+
+
+def high_contrast_marker_gray(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4, 4))
+    boosted = clahe.apply(gray)
+    sharpened = cv2.addWeighted(boosted, 2.0, cv2.GaussianBlur(boosted, (0, 0), 1.0), -1.0, 0)
+    _, binary = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    return cv2.medianBlur(binary, 3)
 
 
 def detect_edges(
@@ -89,7 +111,11 @@ def build_edge_variants(image: np.ndarray, preprocess_mode: EnhancementMode = No
     gray = cv2.cvtColor(working_image, cv2.COLOR_BGR2GRAY)
     yellow_mask = yellow_pipe_mask(working_image)
     gray_without_yellow = suppress_masked_edges(gray, yellow_mask)
+    high_contrast = high_contrast_marker_gray(working_image)
+    high_contrast_without_yellow = suppress_masked_edges(high_contrast, yellow_mask)
     variants = [
+        detect_edges(high_contrast_without_yellow, low_scale=0.35, high_scale=0.9, ignore_mask=yellow_mask),
+        detect_edges(high_contrast_without_yellow, low_scale=0.5, high_scale=1.1, ignore_mask=yellow_mask),
         detect_edges(gray_without_yellow, ignore_mask=yellow_mask),
         detect_edges(gray_without_yellow, low_scale=0.5, high_scale=1.1, ignore_mask=yellow_mask),
         detect_edges(gray),
@@ -334,6 +360,45 @@ def dedupe_candidates(quads: Iterable[np.ndarray], tol: float = 10.0) -> list[np
             continue
         unique.append(quad)
     return unique
+
+
+def quad_bbox_iou(quad_a: np.ndarray, quad_b: np.ndarray) -> float:
+    a = order_corners(quad_a)
+    b = order_corners(quad_b)
+    ax0, ay0 = np.min(a, axis=0)
+    ax1, ay1 = np.max(a, axis=0)
+    bx0, by0 = np.min(b, axis=0)
+    bx1, by1 = np.max(b, axis=0)
+
+    inter_x0 = max(float(ax0), float(bx0))
+    inter_y0 = max(float(ay0), float(by0))
+    inter_x1 = min(float(ax1), float(bx1))
+    inter_y1 = min(float(ay1), float(by1))
+    inter_w = max(0.0, inter_x1 - inter_x0)
+    inter_h = max(0.0, inter_y1 - inter_y0)
+    inter_area = inter_w * inter_h
+    area_a = max(0.0, float(ax1 - ax0)) * max(0.0, float(ay1 - ay0))
+    area_b = max(0.0, float(bx1 - bx0)) * max(0.0, float(by1 - by0))
+    union = area_a + area_b - inter_area
+    if union <= 0.0:
+        return 0.0
+    return inter_area / union
+
+
+def non_max_suppression_candidates(
+    candidates: list[Candidate],
+    *,
+    max_iou: float = 0.72,
+    max_candidates: int = 24,
+) -> list[Candidate]:
+    kept: list[Candidate] = []
+    for candidate in candidates:
+        if any(quad_bbox_iou(candidate.quad, kept_candidate.quad) > max_iou for kept_candidate in kept):
+            continue
+        kept.append(candidate)
+        if len(kept) >= max_candidates:
+            break
+    return kept
 
 
 def find_contour_candidates(edges: np.ndarray, width: int, height: int, min_area: float, variant_idx: int) -> list[Candidate]:
@@ -701,6 +766,34 @@ def quad_mask_fraction(mask: np.ndarray, quad: np.ndarray, out_size: int = 64) -
     return float(np.count_nonzero(warped > 0)) / float(out_size * out_size)
 
 
+def quad_edge_clutter_penalty(edges: np.ndarray, quad: np.ndarray, out_size: int = 96) -> float:
+    dst_square = np.array(
+        [
+            [0, 0],
+            [out_size - 1, 0],
+            [out_size - 1, out_size - 1],
+            [0, out_size - 1],
+        ],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(order_corners(quad).astype(np.float32), dst_square)
+    warped = cv2.warpPerspective(edges, matrix, (out_size, out_size))
+    edge_binary = (warped > 0).astype(np.float32)
+
+    margin = max(6, out_size // 12)
+    inner = edge_binary[margin:-margin, margin:-margin]
+    if inner.size == 0:
+        return 0.0
+
+    edge_fraction = float(np.mean(inner))
+    local_density = cv2.boxFilter(inner, ddepth=-1, ksize=(9, 9), normalize=True)
+    dense_patch = float(np.percentile(local_density, 95))
+
+    fraction_penalty = max(0.0, (edge_fraction - 0.18) / 0.22) * 30.0
+    patch_penalty = max(0.0, (dense_patch - 0.42) / 0.45) * 25.0
+    return fraction_penalty + patch_penalty
+
+
 def marker_likeness_score(image: np.ndarray, quad: np.ndarray, out_size: int = 96) -> float:
     cutout = warp_square_cutout(image, quad, out_size)
     gray = cv2.cvtColor(cutout, cv2.COLOR_BGR2GRAY)
@@ -732,7 +825,82 @@ def marker_likeness_score(image: np.ndarray, quad: np.ndarray, out_size: int = 9
     ) / 255.0
     grid_energy = min(grid_energy, 1.0)
 
-    return 0.45 * border_black + 0.30 * balance + 0.25 * grid_energy
+    color_contrast = black_white_color_contrast_score(cutout)
+    white_border = white_marker_border_score(cutout)
+
+    return (
+        0.25 * border_black
+        + 0.20 * white_border
+        + 0.25 * balance
+        + 0.15 * grid_energy
+        + 0.15 * color_contrast
+    )
+
+
+def white_marker_border_score(cutout: np.ndarray) -> float:
+    out_size = cutout.shape[0]
+    if out_size < 24 or cutout.shape[1] < 24:
+        return 0.0
+
+    lab = cv2.cvtColor(cutout, cv2.COLOR_BGR2LAB)
+    lightness = lab[:, :, 0].astype(np.float32)
+    a = lab[:, :, 1].astype(np.float32) - 128.0
+    b = lab[:, :, 2].astype(np.float32) - 128.0
+    chroma = np.sqrt((a * a) + (b * b))
+
+    border = max(5, out_size // 10)
+    bright_neutral = (lightness > 145.0) & (chroma < 34.0)
+    sides = [
+        bright_neutral[:border, :],
+        bright_neutral[-border:, :],
+        bright_neutral[:, :border],
+        bright_neutral[:, -border:],
+    ]
+    side_scores = [float(np.count_nonzero(side)) / float(side.size) for side in sides]
+    all_sides_white = min(side_scores)
+    average_white = float(np.mean(side_scores))
+
+    inner = lightness[border:-border, border:-border]
+    if inner.size == 0:
+        return 0.0
+    _, inner_binary = cv2.threshold(inner.astype(np.uint8), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    dark_fraction = 1.0 - (float(np.mean(inner_binary)) / 255.0)
+    inner_balance = 1.0 - min(abs(dark_fraction - 0.5) / 0.5, 1.0)
+
+    return 0.55 * all_sides_white + 0.25 * average_white + 0.20 * inner_balance
+
+
+def black_white_color_contrast_score(cutout: np.ndarray) -> float:
+    lab = cv2.cvtColor(cutout, cv2.COLOR_BGR2LAB)
+    lightness = lab[:, :, 0].astype(np.float32)
+    a = lab[:, :, 1].astype(np.float32) - 128.0
+    b = lab[:, :, 2].astype(np.float32) - 128.0
+    chroma = np.sqrt((a * a) + (b * b))
+
+    _, otsu = cv2.threshold(lightness.astype(np.uint8), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    dark = otsu == 0
+    light = otsu > 0
+    if not np.any(dark) or not np.any(light):
+        return 0.0
+
+    dark_luma = float(np.mean(lightness[dark]))
+    light_luma = float(np.mean(lightness[light]))
+    luma_contrast = min(max((light_luma - dark_luma) / 150.0, 0.0), 1.0)
+
+    neutral = chroma < 24.0
+    neutral_dark = float(np.count_nonzero(dark & neutral)) / max(float(np.count_nonzero(dark)), 1.0)
+    neutral_light = float(np.count_nonzero(light & neutral)) / max(float(np.count_nonzero(light)), 1.0)
+    neutral_pair = min(neutral_dark, neutral_light)
+
+    dark_fraction = float(np.count_nonzero(dark)) / float(dark.size)
+    light_fraction = 1.0 - dark_fraction
+    balance = min(dark_fraction, light_fraction) / 0.35
+    balance = min(max(balance, 0.0), 1.0)
+
+    edges = cv2.morphologyEx(otsu, cv2.MORPH_GRADIENT, np.ones((3, 3), dtype=np.uint8))
+    edge_density = min(float(np.count_nonzero(edges)) / float(edges.size) * 5.0, 1.0)
+
+    return 0.40 * luma_contrast + 0.30 * neutral_pair + 0.20 * balance + 0.10 * edge_density
 
 
 def candidate_selection_score(
@@ -741,17 +909,24 @@ def candidate_selection_score(
     width: int,
     height: int,
     yellow_mask: np.ndarray | None = None,
+    blue_mask: np.ndarray | None = None,
     image: np.ndarray | None = None,
+    clutter_edges: np.ndarray | None = None,
 ) -> float:
-    yellow_penalty = 0.0
+    color_penalty = 0.0
     if yellow_mask is not None and np.any(yellow_mask):
-        yellow_penalty = quad_mask_fraction(yellow_mask, candidate.quad) * 80.0
+        color_penalty += quad_mask_fraction(yellow_mask, candidate.quad) * 80.0
+    if blue_mask is not None and np.any(blue_mask):
+        color_penalty += quad_mask_fraction(blue_mask, candidate.quad) * 28.0
+    clutter_penalty = 0.0
+    if clutter_edges is not None and np.any(clutter_edges):
+        clutter_penalty = quad_edge_clutter_penalty(clutter_edges, candidate.quad)
     marker_bonus = 0.0
     if image is not None:
         marker_bonus = marker_likeness_score(image, candidate.quad) * 45.0
 
     if candidate.source != "hough_dominant":
-        return edge_score + yellow_penalty - marker_bonus
+        return edge_score + color_penalty + clutter_penalty - marker_bonus
 
     # A single dominant line family can lock onto internal stripes. Prefer the
     # larger projected sign without forcing equal side lengths in image space.
@@ -760,7 +935,7 @@ def candidate_selection_score(
     lengths = edge_lengths(candidate.quad)
     side_ratio = float(np.max(lengths) / max(np.min(lengths), 1e-6))
     stripe_penalty = max(0.0, side_ratio - 4.0) * 2.0
-    return edge_score - 180.0 * area_ratio + stripe_penalty + yellow_penalty - marker_bonus
+    return edge_score - 180.0 * area_ratio + stripe_penalty + color_penalty + clutter_penalty - marker_bonus
 
 
 def refine_candidate(
@@ -836,6 +1011,7 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
     height, width = image.shape[:2]
     min_area = max(0.01 * width * height, 400.0)
     yellow_mask = yellow_pipe_mask(image)
+    blue_mask = blue_water_mask(image)
     all_candidates: list[Candidate] = []
     rejected_debug: list[np.ndarray] = []
 
@@ -845,16 +1021,22 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
             aruco_candidates,
             key=lambda candidate: marker_likeness_score(image, candidate.quad),
         )
+        aruco_quad = best_aruco.quad
+        source = best_aruco.source
+        inner_quad = refine_quad_to_inner_black_marker(image, aruco_quad, width, height, min_area)
+        if inner_quad is not None:
+            aruco_quad = inner_quad
+            source = f"{source}:inner_black"
         score = edge_distance_score(
-            best_aruco.quad,
+            aruco_quad,
             edge_variants[0].dist,
             edge_variants[0].grad_mag,
         )
         return FitResult(
-            quad=best_aruco.quad,
+            quad=aruco_quad,
             score=score,
             rejected=[candidate.quad for candidate in aruco_candidates if candidate is not best_aruco],
-            source=best_aruco.source,
+            source=source,
         )
 
     for idx, artifacts in enumerate(edge_variants):
@@ -879,9 +1061,12 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
             width,
             height,
             yellow_mask,
+            blue_mask,
             image,
+            edge_variants[c.variant_idx].edges_canny,
         )
     )
+    all_candidates = non_max_suppression_candidates(all_candidates)
     shortlist = all_candidates[: min(12, len(all_candidates))]
 
     best_quad = None
@@ -900,7 +1085,9 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
             width,
             height,
             yellow_mask,
+            blue_mask,
             image,
+            artifacts.edges_canny,
         )
         if selection_score < best_selection_score:
             if best_quad is not None:
@@ -914,7 +1101,15 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
     if best_quad is None:
         raise RuntimeError("Candidate refinement failed")
 
-    return FitResult(quad=best_quad, score=best_score, rejected=rejected_debug, source="hough")
+    source = "hough"
+    inner_quad = refine_quad_to_inner_black_marker(image, best_quad, width, height, min_area)
+    if inner_quad is not None:
+        rejected_debug.append(best_quad)
+        best_quad = inner_quad
+        best_score = edge_distance_score(best_quad, edge_variants[0].dist, edge_variants[0].grad_mag)
+        source = "hough:inner_black"
+
+    return FitResult(quad=best_quad, score=best_score, rejected=rejected_debug, source=source)
 
 
 def warp_square_cutout(image: np.ndarray, quad: np.ndarray, out_size: int) -> np.ndarray:
@@ -929,6 +1124,68 @@ def warp_square_cutout(image: np.ndarray, quad: np.ndarray, out_size: int) -> np
     )
     matrix = cv2.getPerspectiveTransform(quad.astype(np.float32), dst_square)
     return cv2.warpPerspective(image, matrix, (out_size, out_size))
+
+
+def refine_quad_to_inner_black_marker(
+    image: np.ndarray,
+    quad: np.ndarray,
+    width: int,
+    height: int,
+    min_area: float,
+    *,
+    work_size: int = 256,
+) -> np.ndarray | None:
+    ordered = order_corners(quad)
+    cutout = warp_square_cutout(image, ordered, work_size)
+    gray = cv2.cvtColor(cutout, cv2.COLOR_BGR2GRAY)
+    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, dark_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel)
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8))
+
+    ys, xs = np.nonzero(dark_mask > 0)
+    if len(xs) < work_size * work_size * 0.04:
+        return None
+
+    x0, x1 = np.percentile(xs, [1.5, 98.5])
+    y0, y1 = np.percentile(ys, [1.5, 98.5])
+    box_w = float(x1 - x0)
+    box_h = float(y1 - y0)
+    if box_w < work_size * 0.35 or box_h < work_size * 0.35:
+        return None
+
+    # If the detected dark region already fills the warp, the original quad is
+    # probably on the black marker and there is nothing useful to crop inward.
+    margin = min(x0, y0, work_size - 1 - x1, work_size - 1 - y1)
+    if margin < work_size * 0.015:
+        return None
+
+    pad = work_size * 0.012
+    x0 = max(0.0, float(x0) - pad)
+    y0 = max(0.0, float(y0) - pad)
+    x1 = min(float(work_size - 1), float(x1) + pad)
+    y1 = min(float(work_size - 1), float(y1) + pad)
+
+    inner_warp_quad = np.array(
+        [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+        dtype=np.float32,
+    )
+    dst_square = np.array(
+        [[0, 0], [work_size - 1, 0], [work_size - 1, work_size - 1], [0, work_size - 1]],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(ordered.astype(np.float32), dst_square)
+    inverse = np.linalg.inv(matrix)
+    inner = cv2.perspectiveTransform(inner_warp_quad[None, :, :], inverse)[0]
+    inner = order_corners(inner)
+
+    if not is_valid_quad(inner, width, height, min_area * 0.25):
+        return None
+    if polygon_area(inner) > polygon_area(ordered) * 0.96:
+        return None
+    return inner.astype(np.float32)
 
 
 def _draw_line_set(canvas: np.ndarray, lines: np.ndarray | None, color: tuple[int, int, int], thickness: int) -> None:
@@ -1049,6 +1306,14 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
     def _debug_yellow_mask_path(self) -> Path:
         return self.debug_dir / "marker_yellow_suppression_mask.png"
 
+    @property
+    def _debug_color_mask_path(self) -> Path:
+        return self.debug_dir / "marker_color_suppression_mask.png"
+
+    @property
+    def _debug_blue_mask_path(self) -> Path:
+        return self.debug_dir / "marker_blue_water_mask.png"
+
     def _write_debug_images(
         self,
         image: np.ndarray,
@@ -1062,6 +1327,9 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
 
         _write_debug_image(self._debug_input_path, image)
         _write_debug_image(self._debug_yellow_mask_path, yellow_pipe_mask(image))
+        blue_mask = blue_water_mask(image)
+        _write_debug_image(self._debug_blue_mask_path, blue_mask)
+        _write_debug_image(self._debug_color_mask_path, cv2.bitwise_or(yellow_pipe_mask(image), blue_mask))
         _write_debug_image(self._debug_hough_lines_path, _draw_hough_debug(image, line_debug[:4]))
         _write_debug_image(self._debug_all_hough_lines_path, _draw_hough_debug(image, line_debug))
         _write_debug_image(self._debug_detected_quad_path, _draw_detected_quad(image, quad, source))

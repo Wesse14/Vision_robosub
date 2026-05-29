@@ -15,6 +15,12 @@ import main as app_main
 
 from src.modules.marker_rectifier import refine_candidate
 from src.modules.marker_rectifier import is_valid_quad
+from src.modules.marker_rectifier import polygon_area
+from src.modules.marker_rectifier import refine_quad_to_inner_black_marker
+from src.modules.marker_rectifier import black_white_color_contrast_score
+from src.modules.marker_rectifier import blue_water_mask
+from src.modules.marker_rectifier import white_marker_border_score
+from src.modules.marker_rectifier import quad_edge_clutter_penalty
 
 from src import (
     AsyncProcessor,
@@ -602,6 +608,23 @@ def make_synthetic_marker_with_yellow_pipe() -> np.ndarray:
     return image
 
 
+def make_synthetic_marker_with_blue_water_edge() -> np.ndarray:
+    image = make_synthetic_marker_image()
+    cv2.line(image, (15, 320), (465, 45), (230, 110, 20), 48, cv2.LINE_AA)
+    marker_quad = np.array(
+        [[95, 70], [380, 95], [350, 315], [120, 290]],
+        dtype=np.int32,
+    )
+    inner_quad = np.array(
+        [[150, 125], [320, 135], [305, 245], [160, 240]],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(image, marker_quad, (20, 20, 20))
+    cv2.fillConvexPoly(image, inner_quad, (240, 240, 240))
+    cv2.polylines(image, [marker_quad], True, (0, 0, 0), 8, cv2.LINE_AA)
+    return image
+
+
 def marker_debug_paths(debug_dir: Path) -> list[Path]:
     return [
         debug_dir / "marker_input.png",
@@ -640,6 +663,78 @@ def test_marker_quad_validation_rejects_nearly_triangular_shapes() -> None:
     )
 
     assert not is_valid_quad(bad_quad, width=480, height=360, min_area=400.0)
+
+
+def test_marker_quad_refinement_moves_to_inner_black_marker() -> None:
+    image = np.full((300, 300, 3), 130, dtype=np.uint8)
+    outer = np.array([[40, 40], [260, 40], [260, 260], [40, 260]], dtype=np.int32)
+    inner = np.array([[78, 78], [222, 78], [222, 222], [78, 222]], dtype=np.int32)
+    cv2.fillConvexPoly(image, outer, (245, 245, 245))
+    cv2.fillConvexPoly(image, inner, (10, 10, 10))
+    cv2.rectangle(image, (115, 115), (185, 185), (245, 245, 245), -1)
+
+    refined = refine_quad_to_inner_black_marker(
+        image,
+        outer.astype(np.float32),
+        width=300,
+        height=300,
+        min_area=400.0,
+    )
+
+    assert refined is not None
+    assert polygon_area(refined) < polygon_area(outer.astype(np.float32)) * 0.7
+    assert np.min(refined[:, 0]) > 55
+    assert np.min(refined[:, 1]) > 55
+
+
+def test_black_white_color_contrast_prefers_neutral_marker_pattern() -> None:
+    neutral = np.full((96, 96, 3), 245, dtype=np.uint8)
+    neutral[16:80, 16:80] = (10, 10, 10)
+    neutral[32:64, 32:64] = (245, 245, 245)
+
+    colorful = np.full((96, 96, 3), (0, 220, 220), dtype=np.uint8)
+    colorful[16:80, 16:80] = (40, 40, 190)
+    colorful[32:64, 32:64] = (0, 220, 220)
+
+    assert black_white_color_contrast_score(neutral) > black_white_color_contrast_score(colorful)
+
+
+def test_white_marker_border_score_prefers_four_white_sides() -> None:
+    with_border = np.full((96, 96, 3), 245, dtype=np.uint8)
+    with_border[14:82, 14:82] = (12, 12, 12)
+    with_border[30:66, 30:66] = (245, 245, 245)
+
+    without_border = np.full((96, 96, 3), 12, dtype=np.uint8)
+    without_border[30:66, 30:66] = (245, 245, 245)
+
+    assert white_marker_border_score(with_border) > white_marker_border_score(without_border) + 0.4
+
+
+def test_quad_edge_clutter_penalty_rejects_dense_edge_clusters() -> None:
+    quad = np.array([[16, 16], [80, 16], [80, 80], [16, 80]], dtype=np.float32)
+    clean_edges = np.zeros((96, 96), dtype=np.uint8)
+    cv2.rectangle(clean_edges, (16, 16), (80, 80), 255, 1)
+    for pos in (30, 48, 66):
+        cv2.line(clean_edges, (pos, 16), (pos, 80), 255, 1)
+        cv2.line(clean_edges, (16, pos), (80, pos), 255, 1)
+
+    cluttered_edges = clean_edges.copy()
+    for offset in range(0, 36, 3):
+        cv2.line(cluttered_edges, (28 + offset, 20), (20, 28 + offset), 255, 2)
+        cv2.line(cluttered_edges, (76 - offset, 20), (20, 76 - offset), 255, 2)
+
+    assert quad_edge_clutter_penalty(cluttered_edges, quad) > quad_edge_clutter_penalty(clean_edges, quad) + 10.0
+
+
+def test_blue_water_mask_detects_saturated_blue_regions() -> None:
+    image = np.zeros((80, 80, 3), dtype=np.uint8)
+    image[:, :40] = (220, 120, 20)
+    image[:, 40:] = (30, 30, 30)
+
+    mask = blue_water_mask(image)
+
+    assert np.count_nonzero(mask[:, :40]) > 1200
+    assert np.count_nonzero(mask[:, 40:]) == 0
 
 
 def test_marker_rectification_debug_disabled_does_not_create_debug_files(tmp_path: Path) -> None:
@@ -904,6 +999,26 @@ def test_marker_rectification_ignores_yellow_pipe_edges() -> None:
         )
 
         routed = await module.process(Message(make_synthetic_marker_with_yellow_pipe()), AsyncProcessor())
+
+        assert routed is not None
+        quad = np.asarray(routed.message.metadata["quad"], dtype=np.float32)
+        center = np.mean(quad, axis=0)
+        assert 180 <= center[0] <= 300
+        assert 150 <= center[1] <= 230
+        assert routed.message.payload.shape == (512, 512, 3)
+
+    asyncio.run(scenario())
+
+
+def test_marker_rectification_ignores_blue_water_edges() -> None:
+    async def scenario() -> None:
+        module = MarkerRectificationModule(
+            name="rectifier",
+            input_queue="frames",
+            output_queue="cutouts",
+        )
+
+        routed = await module.process(Message(make_synthetic_marker_with_blue_water_edge()), AsyncProcessor())
 
         assert routed is not None
         quad = np.asarray(routed.message.metadata["quad"], dtype=np.float32)

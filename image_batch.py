@@ -34,6 +34,7 @@ SUPPORTED_EXTENSIONS = {".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp
 SUPPORTED_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mov", ".mp4", ".mpeg", ".mpg"}
 PIPELINES = ("enhance", "marker", "aruco", "gmm", "full")
 GENERATED_FRAME_PREFIX = "video_frame__"
+QUAD_SUMMARY_DIR_NAME = "_marker_detected_quads"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -211,6 +212,17 @@ def write_image(path: Path, image: np.ndarray) -> None:
         raise RuntimeError(f"Could not write image: {path}")
 
 
+def copy_marker_detected_quad(output_root: Path, source_image_path: Path, debug_dir: Path) -> None:
+    quad_path = debug_dir / "marker" / "marker_detected_quad.png"
+    if not quad_path.exists():
+        return
+
+    summary_dir = output_root / QUAD_SUMMARY_DIR_NAME
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    output_path = summary_dir / f"{source_image_path.stem}_marker_detected_quad.png"
+    shutil.copy2(quad_path, output_path)
+
+
 def payload_image(payload: VideoFrame | np.ndarray) -> np.ndarray:
     return payload.image if isinstance(payload, VideoFrame) else payload
 
@@ -366,6 +378,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             attempt = marker_message.metadata.get("marker_preprocess_attempt", "initial")
             if attempt != "initial":
                 write_image(output_dir / f"02_marker_cutout_{attempt}.png", marker_image)
+            copy_marker_detected_quad(args.output_dir, path, debug_dir)
 
     if args.pipeline in {"aruco", "full"} and marker_image is not None and marker_message is not None:
         aruco = ArucoDetectionModule(
