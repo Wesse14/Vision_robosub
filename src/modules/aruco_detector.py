@@ -16,8 +16,13 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_MARKER_IDS = frozenset(range(101))
 DEFAULT_MASK_TEMPLATE_DIR = Path("data/aruco_mask")
+DEFAULT_EXTENDED_MASK_TEMPLATE_DIR = Path("data/aruco_mask_extend")
 MASK_MATCH_SIZE = 160
 GRID_SIZE = 7
+MASK_MATCH_ACCEPT_THRESHOLD = 0.75
+GRID_MATCH_ACCEPT_THRESHOLD = 0.90
+STRONG_MASK_MATCH_THRESHOLD = 0.85
+STRONG_GRID_MATCH_THRESHOLD = 0.95
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,12 +39,17 @@ class ArucoDetection:
     mask_match_id: int | None
     mask_match_score: float
     mask_match_rotation: int
+    mask_match_source: str
     mask_match_image: np.ndarray
     grid_match_id: int | None
     grid_match_score: float
     grid_match_rotation: int
+    grid_match_source: str
     grid_image: np.ndarray
     grid_match_image: np.ndarray
+    navigation_signal: str
+    navigation_marker_id: int | None
+    navigation_reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +79,7 @@ class MaskMatch:
     rotation: int
     candidate_image: np.ndarray
     template_image: np.ndarray | None
+    template_source: str
 
 
 def _aruco_module() -> Any:
@@ -109,7 +120,6 @@ def _preprocess_variants(image: np.ndarray) -> list[PreprocessVariant]:
     gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(6, 6))
     equalized = clahe.apply(gray)
-    blurred = cv2.GaussianBlur(equalized, (3, 3), 0)
     sharpened = cv2.addWeighted(equalized, 1.8, cv2.GaussianBlur(equalized, (0, 0), 1.2), -0.8, 0)
     _, otsu = cv2.threshold(
         sharpened,
@@ -125,45 +135,23 @@ def _preprocess_variants(image: np.ndarray) -> list[PreprocessVariant]:
         35,
         5,
     )
-    adaptive_mean = cv2.adaptiveThreshold(
-        sharpened,
-        255,
-        cv2.ADAPTIVE_THRESH_MEAN_C,
-        cv2.THRESH_BINARY,
-        35,
-        3,
-    )
-    _, sharpened_otsu = cv2.threshold(
-        sharpened,
-        0,
-        255,
-        cv2.THRESH_BINARY | cv2.THRESH_OTSU,
-    )
     kernel = np.ones((3, 3), dtype=np.uint8)
     cleaned_otsu = cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, kernel)
     cleaned_adaptive = cv2.morphologyEx(adaptive, cv2.MORPH_CLOSE, kernel)
-    opened_adaptive = cv2.morphologyEx(adaptive, cv2.MORPH_OPEN, kernel)
     black_white_strong = cv2.medianBlur(cleaned_adaptive, 3)
 
     base_variants = [
         ("cleaned_otsu", cleaned_otsu),
-        ("black_white_strong", black_white_strong),
         ("otsu", otsu),
         ("cleaned_adaptive", cleaned_adaptive),
         ("adaptive_gaussian", adaptive),
-        ("adaptive_mean", adaptive_mean),
-        ("sharpened_otsu", sharpened_otsu),
-        ("opened_adaptive", opened_adaptive),
-        ("sharpened", sharpened),
-        ("equalized", equalized),
-        ("gray", gray),
+        ("black_white_strong", black_white_strong),
     ]
 
     variants: list[PreprocessVariant] = []
     for name, variant in base_variants:
         variants.append(PreprocessVariant(name, variant))
-        if name not in {"gray", "equalized"}:
-            variants.append(_resize_variant(f"{name}_2x", variant, 2.0))
+        variants.append(_resize_variant(f"{name}_2x", variant, 2.0))
     return variants
 
 
@@ -323,10 +311,11 @@ def match_aruco_mask(
 ) -> MaskMatch:
     templates = _load_mask_templates(template_dir)
     candidates = _candidate_crops(high_contrast_image)
+    template_source = str(template_dir)
     if not templates or not candidates:
-        return MaskMatch(None, 0.0, 0, _binary_normalize(high_contrast_image), None)
+        return MaskMatch(None, 0.0, 0, _binary_normalize(high_contrast_image), None, template_source)
 
-    best = MaskMatch(None, -1.0, 0, candidates[0], None)
+    best = MaskMatch(None, -1.0, 0, candidates[0], None, template_source)
     for candidate in candidates:
         for template in templates:
             for rotation in (0, 90, 180, 270):
@@ -341,6 +330,7 @@ def match_aruco_mask(
                         rotation=rotation,
                         candidate_image=candidate,
                         template_image=rotated_template,
+                        template_source=template_source,
                     )
     return best
 
@@ -350,6 +340,7 @@ def match_aruco_grid(
     template_dir: Path = DEFAULT_MASK_TEMPLATE_DIR,
 ) -> MaskMatch:
     templates = _load_mask_templates(template_dir)
+    template_source = str(template_dir)
     template_grids = [
         MaskTemplate(marker_id=template.marker_id, image=_grid_from_binary(template.image))
         for template in templates
@@ -357,9 +348,9 @@ def match_aruco_grid(
     candidates = _grid_candidates(high_contrast_image)
     if not template_grids or not candidates:
         fallback = _grid_from_binary(high_contrast_image)
-        return MaskMatch(None, 0.0, 0, fallback, None)
+        return MaskMatch(None, 0.0, 0, fallback, None, template_source)
 
-    best = MaskMatch(None, -1.0, 0, candidates[0], None)
+    best = MaskMatch(None, -1.0, 0, candidates[0], None, template_source)
     for candidate in candidates:
         for template in template_grids:
             for rotation in (0, 90, 180, 270):
@@ -374,8 +365,72 @@ def match_aruco_grid(
                         rotation=rotation,
                         candidate_image=candidate,
                         template_image=rotated_template,
+                        template_source=template_source,
                     )
     return best
+
+
+def _match_with_extended_fallback(
+    high_contrast_image: np.ndarray,
+    matcher: Any,
+) -> MaskMatch:
+    primary = matcher(high_contrast_image, DEFAULT_MASK_TEMPLATE_DIR)
+    if primary.marker_id is not None and primary.score >= MASK_MATCH_ACCEPT_THRESHOLD:
+        return primary
+
+    extended = matcher(high_contrast_image, DEFAULT_EXTENDED_MASK_TEMPLATE_DIR)
+    if extended.marker_id is not None and extended.score > primary.score:
+        return extended
+    return primary
+
+
+def marker_navigation_signal(
+    detected_ids: tuple[int, ...],
+    high_contrast_ids: tuple[int, ...],
+    mask_match: MaskMatch,
+    grid_match: MaskMatch,
+) -> tuple[str, int | None, str]:
+    if (
+        mask_match.marker_id is not None
+        and mask_match.marker_id == grid_match.marker_id
+        and mask_match.score >= STRONG_MASK_MATCH_THRESHOLD
+        and grid_match.score >= STRONG_GRID_MATCH_THRESHOLD
+    ):
+        marker_id = mask_match.marker_id
+        if marker_id in detected_ids or marker_id in high_contrast_ids:
+            return "NEXT", marker_id, "strong mask/grid agreement with aruco support"
+        return "NEXT", marker_id, "strong mask and grid agreement"
+
+    return "TRY_AGAIN_MOVE_CLOSER", None, "mask and grid ids do not strongly agree"
+
+
+def draw_navigation_signal(image: np.ndarray, signal: str, marker_id: int | None, reason: str) -> np.ndarray:
+    canvas = image.copy()
+    ok = signal == "NEXT"
+    color = (0, 180, 0) if ok else (0, 0, 255)
+    label = f"{signal}: ID {marker_id}" if marker_id is not None else signal
+    cv2.rectangle(canvas, (0, 0), (canvas.shape[1], 74), (0, 0, 0), -1)
+    cv2.putText(
+        canvas,
+        label,
+        (16, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.85,
+        color,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        reason[:80],
+        (16, 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (220, 220, 220),
+        1,
+        cv2.LINE_AA,
+    )
+    return canvas
 
 
 def draw_mask_match(match: MaskMatch) -> np.ndarray:
@@ -411,6 +466,16 @@ def draw_mask_match(match: MaskMatch) -> np.ndarray:
         0.65,
         (0, 255, 0) if match.score >= 0.75 else (0, 180, 255),
         2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        comparison,
+        match.template_source,
+        (10, 52),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 0) if match.score >= MASK_MATCH_ACCEPT_THRESHOLD else (0, 180, 255),
+        1,
         cv2.LINE_AA,
     )
     cv2.putText(
@@ -568,11 +633,18 @@ def detect_original_aruco_markers(image: np.ndarray, min_consensus: int = 2) -> 
         )
 
     high_contrast_ids, high_contrast_image, high_contrast_annotated_image = _high_contrast_retry(image)
-    mask_match = match_aruco_mask(high_contrast_image)
+    mask_match = _match_with_extended_fallback(high_contrast_image, match_aruco_mask)
     mask_match_image = draw_mask_match(mask_match)
-    grid_match = match_aruco_grid(high_contrast_image)
+    grid_match = _match_with_extended_fallback(high_contrast_image, match_aruco_grid)
     grid_match_image = draw_mask_match(grid_match)
     grid_image = _render_grid(grid_match.candidate_image)
+    navigation_signal, navigation_marker_id, navigation_reason = marker_navigation_signal(
+        detected_ids,
+        high_contrast_ids,
+        mask_match,
+        grid_match,
+    )
+    annotated = draw_navigation_signal(annotated, navigation_signal, navigation_marker_id, navigation_reason)
 
     return ArucoDetection(
         ids=detected_ids,
@@ -587,12 +659,17 @@ def detect_original_aruco_markers(image: np.ndarray, min_consensus: int = 2) -> 
         mask_match_id=mask_match.marker_id,
         mask_match_score=mask_match.score,
         mask_match_rotation=mask_match.rotation,
+        mask_match_source=mask_match.template_source,
         mask_match_image=mask_match_image,
         grid_match_id=grid_match.marker_id,
         grid_match_score=grid_match.score,
         grid_match_rotation=grid_match.rotation,
+        grid_match_source=grid_match.template_source,
         grid_image=grid_image,
         grid_match_image=grid_match_image,
+        navigation_signal=navigation_signal,
+        navigation_marker_id=navigation_marker_id,
+        navigation_reason=navigation_reason,
     )
 
 
@@ -683,9 +760,14 @@ class ArucoDetectionModule(BaseModule[VideoFrame | np.ndarray]):
         metadata["aruco_mask_match_id"] = detection.mask_match_id
         metadata["aruco_mask_match_score"] = detection.mask_match_score
         metadata["aruco_mask_match_rotation"] = detection.mask_match_rotation
+        metadata["aruco_mask_match_source"] = detection.mask_match_source
         metadata["aruco_grid_match_id"] = detection.grid_match_id
         metadata["aruco_grid_match_score"] = detection.grid_match_score
         metadata["aruco_grid_match_rotation"] = detection.grid_match_rotation
+        metadata["aruco_grid_match_source"] = detection.grid_match_source
+        metadata["navigation_signal"] = detection.navigation_signal
+        metadata["navigation_marker_id"] = detection.navigation_marker_id
+        metadata["navigation_reason"] = detection.navigation_reason
         if isinstance(payload, VideoFrame):
             metadata.setdefault("frame_index", payload.frame_index)
             metadata.setdefault("timestamp_seconds", payload.timestamp_seconds)
@@ -702,18 +784,26 @@ class ArucoDetectionModule(BaseModule[VideoFrame | np.ndarray]):
             logger.warning("No ArUco marker detected in rectified cutout.")
         if detection.mask_match_id is not None:
             logger.info(
-                "Best ArUco mask match id %s with score %.3f at %s degrees",
+                "Best ArUco mask match id %s with score %.3f at %s degrees from %s",
                 detection.mask_match_id,
                 detection.mask_match_score,
                 detection.mask_match_rotation,
+                detection.mask_match_source,
             )
         if detection.grid_match_id is not None:
             logger.info(
-                "Best ArUco grid match id %s with score %.3f at %s degrees",
+                "Best ArUco grid match id %s with score %.3f at %s degrees from %s",
                 detection.grid_match_id,
                 detection.grid_match_score,
                 detection.grid_match_rotation,
+                detection.grid_match_source,
             )
+        logger.info(
+            "Navigation signal: %s%s (%s)",
+            detection.navigation_signal,
+            f" id {detection.navigation_marker_id}" if detection.navigation_marker_id is not None else "",
+            detection.navigation_reason,
+        )
 
         return RoutedMessage(
             destination=self.output_queue,

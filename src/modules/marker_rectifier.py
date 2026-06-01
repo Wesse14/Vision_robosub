@@ -24,6 +24,7 @@ class EdgeArtifacts:
     gray: np.ndarray
     blur: np.ndarray
     edges_canny: np.ndarray
+    contour_masks: tuple[np.ndarray, ...]
     grad_mag: np.ndarray
     dist: np.ndarray
 
@@ -44,6 +45,27 @@ def blue_water_mask(image: np.ndarray) -> np.ndarray:
     mask = cv2.inRange(hsv, lower, upper)
     kernel = np.ones((5, 5), np.uint8)
     return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
+def color_suppression_mask(image: np.ndarray) -> np.ndarray:
+    mask = cv2.bitwise_or(yellow_pipe_mask(image), blue_water_mask(image))
+    if not np.any(mask):
+        return mask
+    close_kernel = np.ones((7, 7), np.uint8)
+    open_kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
+    return cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
+
+
+def repaint_color_suppression_regions(
+    image: np.ndarray,
+    repaint_bgr: tuple[int, int, int] = (0, 0, 255),
+) -> np.ndarray:
+    repainted = image.copy()
+    mask = color_suppression_mask(image)
+    repainted[mask > 0] = repaint_bgr
+    return repainted
 
 
 def suppress_masked_edges(gray: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -89,6 +111,28 @@ def detect_edges(
     if ignore_mask is not None and np.any(ignore_mask):
         blocked = cv2.dilate(ignore_mask, np.ones((7, 7), np.uint8), iterations=1)
         edges_canny[blocked > 0] = 0
+
+    adaptive = cv2.adaptiveThreshold(
+        blur,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        35,
+        3,
+    )
+    adaptive_inv = cv2.bitwise_not(adaptive)
+    contour_kernel = np.ones((3, 3), dtype=np.uint8)
+    contour_masks = tuple(
+        cv2.morphologyEx(mask, cv2.MORPH_CLOSE, contour_kernel)
+        for mask in (adaptive, adaptive_inv)
+    )
+    if ignore_mask is not None and np.any(ignore_mask):
+        blocked = cv2.dilate(ignore_mask, np.ones((7, 7), np.uint8), iterations=1)
+        contour_masks = tuple(
+            cv2.bitwise_and(mask, cv2.bitwise_not(blocked))
+            for mask in contour_masks
+        )
+
     sobel_x = cv2.Sobel(blur, cv2.CV_32F, 1, 0, ksize=3)
     sobel_y = cv2.Sobel(blur, cv2.CV_32F, 0, 1, ksize=3)
     grad_mag = cv2.magnitude(sobel_x, sobel_y)
@@ -101,6 +145,7 @@ def detect_edges(
         gray=gray,
         blur=blur,
         edges_canny=edges_canny,
+        contour_masks=contour_masks,
         grad_mag=grad_mag,
         dist=dist,
     )
@@ -109,15 +154,15 @@ def detect_edges(
 def build_edge_variants(image: np.ndarray, preprocess_mode: EnhancementMode = None) -> tuple[np.ndarray, list[EdgeArtifacts]]:
     working_image = apply_enhancement(image, preprocess_mode) if preprocess_mode is not None else image
     gray = cv2.cvtColor(working_image, cv2.COLOR_BGR2GRAY)
-    yellow_mask = yellow_pipe_mask(working_image)
-    gray_without_yellow = suppress_masked_edges(gray, yellow_mask)
+    suppression_mask = color_suppression_mask(working_image)
+    gray_without_suppressed_colors = suppress_masked_edges(gray, suppression_mask)
     high_contrast = high_contrast_marker_gray(working_image)
-    high_contrast_without_yellow = suppress_masked_edges(high_contrast, yellow_mask)
+    high_contrast_without_suppressed_colors = suppress_masked_edges(high_contrast, suppression_mask)
     variants = [
-        detect_edges(high_contrast_without_yellow, low_scale=0.35, high_scale=0.9, ignore_mask=yellow_mask),
-        detect_edges(high_contrast_without_yellow, low_scale=0.5, high_scale=1.1, ignore_mask=yellow_mask),
-        detect_edges(gray_without_yellow, ignore_mask=yellow_mask),
-        detect_edges(gray_without_yellow, low_scale=0.5, high_scale=1.1, ignore_mask=yellow_mask),
+        detect_edges(high_contrast_without_suppressed_colors, low_scale=0.35, high_scale=0.9, ignore_mask=suppression_mask),
+        detect_edges(high_contrast_without_suppressed_colors, low_scale=0.5, high_scale=1.1, ignore_mask=suppression_mask),
+        detect_edges(gray_without_suppressed_colors, ignore_mask=suppression_mask),
+        detect_edges(gray_without_suppressed_colors, low_scale=0.5, high_scale=1.1, ignore_mask=suppression_mask),
         detect_edges(gray),
         detect_edges(gray, low_scale=0.5, high_scale=1.1),
     ]
@@ -401,11 +446,40 @@ def non_max_suppression_candidates(
     return kept
 
 
-def find_contour_candidates(edges: np.ndarray, width: int, height: int, min_area: float, variant_idx: int) -> list[Candidate]:
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    candidates: list[np.ndarray] = []
+def contour_candidate_has_marker_contrast(
+    image: np.ndarray,
+    quad: np.ndarray,
+    *,
+    work_size: int = 96,
+    min_stddev: float = 24.0,
+) -> bool:
+    cutout = warp_square_cutout(image, quad, work_size)
+    gray = cv2.cvtColor(cutout, cv2.COLOR_BGR2GRAY) if cutout.ndim == 3 else cutout
+    center = gray[work_size // 8 : work_size - work_size // 8, work_size // 8 : work_size - work_size // 8]
+    if center.size == 0:
+        center = gray
+    return float(np.std(center)) >= min_stddev
 
-    for cnt in contours:
+
+def find_contour_candidates(
+    mask: np.ndarray,
+    width: int,
+    height: int,
+    min_area: float,
+    variant_idx: int,
+    validation_image: np.ndarray | None = None,
+) -> list[Candidate]:
+    contour_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), dtype=np.uint8))
+    contours, hierarchy = cv2.findContours(contour_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: list[np.ndarray] = []
+    if hierarchy is None:
+        return []
+    hierarchy_items = hierarchy[0]
+    contour_min_area = max(min_area, 0.05 * float(width * height))
+
+    for idx, cnt in enumerate(contours):
+        if hierarchy_items[idx][2] == -1:
+            continue
         peri = cv2.arcLength(cnt, True)
         if peri <= 0:
             continue
@@ -414,14 +488,23 @@ def find_contour_candidates(edges: np.ndarray, width: int, height: int, min_area
             if len(approx) != 4:
                 continue
             approx = approx.reshape(-1, 2).astype(np.float32)
-            if cv2.contourArea(approx) < min_area:
+            if cv2.contourArea(approx) < contour_min_area:
+                continue
+            x, y, w, h = cv2.boundingRect(approx.astype(np.int32))
+            aspect_ratio = float(max(w, h)) / max(float(min(w, h)), 1.0)
+            if aspect_ratio > 4.0:
                 continue
             if not cv2.isContourConvex(approx.astype(np.int32)):
                 continue
             if is_valid_quad(approx, width, height, min_area):
+                if validation_image is not None and not contour_candidate_has_marker_contrast(validation_image, approx):
+                    continue
                 candidates.append(order_corners(approx))
 
-    return [Candidate(quad=quad, source="contour", variant_idx=variant_idx) for quad in dedupe_candidates(candidates)]
+    return [
+        Candidate(quad=quad, source="adaptive_contour", variant_idx=variant_idx)
+        for quad in dedupe_candidates(candidates)
+    ]
 
 
 def line_to_abc(line: Sequence[float]) -> np.ndarray | None:
@@ -1040,12 +1123,22 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
         )
 
     for idx, artifacts in enumerate(edge_variants):
-        contour_candidates = find_contour_candidates(artifacts.edges_canny, width, height, min_area, idx)
+        contour_candidates = [
+            candidate
+            for contour_mask in artifacts.contour_masks
+            for candidate in find_contour_candidates(
+                contour_mask,
+                width,
+                height,
+                min_area,
+                idx,
+                artifacts.gray,
+            )
+        ]
         hough_candidates, _ = hough_line_debug(artifacts.edges_canny, width, height, min_area, idx)
         closed_edges = fallback_edge_retry(artifacts)
-        closed_contour_candidates = find_contour_candidates(closed_edges, width, height, min_area, idx)
         closed_hough_candidates, _ = hough_line_debug(closed_edges, width, height, min_area, idx, closed_edges_used=True)
-        candidates = contour_candidates + hough_candidates + closed_contour_candidates + closed_hough_candidates
+        candidates = contour_candidates + hough_candidates + closed_hough_candidates
 
         for candidate in candidates:
             candidate.score = edge_distance_score(candidate.quad, artifacts.dist, artifacts.grad_mag)
@@ -1267,6 +1360,7 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         preprocess_mode: EnhancementMode = None,
         debug: bool = False,
         debug_dir: Path | str = Path("data/debug"),
+        experimental_color_repaint_retry: bool = False,
     ) -> None:
         if not output_queue:
             raise ValueError("Module output_queue cannot be empty.")
@@ -1279,6 +1373,7 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         self.preprocess_mode = preprocess_mode
         self.debug = debug
         self.debug_dir = Path(debug_dir)
+        self.experimental_color_repaint_retry = experimental_color_repaint_retry
         if self.debug:
             self.debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1314,6 +1409,10 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
     def _debug_blue_mask_path(self) -> Path:
         return self.debug_dir / "marker_blue_water_mask.png"
 
+    @property
+    def _debug_color_repaint_path(self) -> Path:
+        return self.debug_dir / "marker_color_repaint_retry_input.png"
+
     def _write_debug_images(
         self,
         image: np.ndarray,
@@ -1329,13 +1428,18 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         _write_debug_image(self._debug_yellow_mask_path, yellow_pipe_mask(image))
         blue_mask = blue_water_mask(image)
         _write_debug_image(self._debug_blue_mask_path, blue_mask)
-        _write_debug_image(self._debug_color_mask_path, cv2.bitwise_or(yellow_pipe_mask(image), blue_mask))
+        _write_debug_image(self._debug_color_mask_path, color_suppression_mask(image))
         _write_debug_image(self._debug_hough_lines_path, _draw_hough_debug(image, line_debug[:4]))
         _write_debug_image(self._debug_all_hough_lines_path, _draw_hough_debug(image, line_debug))
         _write_debug_image(self._debug_detected_quad_path, _draw_detected_quad(image, quad, source))
         if cutout is None:
             cutout = np.zeros((self.out_size, self.out_size, image.shape[2]), dtype=image.dtype)
         _write_debug_image(self._debug_cutout_path, cutout)
+
+    def _detect_fit(self, image: np.ndarray) -> tuple[FitResult, list[LineDebug]]:
+        _, edge_variants = build_edge_variants(image, self.preprocess_mode)
+        line_debug = collect_line_debug(image, edge_variants) if self.debug else []
+        return fit_square(image, edge_variants), line_debug
 
     async def process(
         self,
@@ -1347,19 +1451,35 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         validate_color_image(image)
 
         line_debug: list[LineDebug] = []
+        detection_image = image
+        color_repaint_retry_used = False
         try:
-            _, edge_variants = build_edge_variants(image, self.preprocess_mode)
-            if self.debug:
-                line_debug = collect_line_debug(image, edge_variants)
-            fit_result = fit_square(image, edge_variants)
+            fit_result, line_debug = self._detect_fit(image)
         except RuntimeError as exc:
-            self._write_debug_images(image, line_debug, quad=None, cutout=None)
-            logger.warning("Dropping frame without detected marker: %s", exc)
-            return None
+            if not self.experimental_color_repaint_retry:
+                self._write_debug_images(image, line_debug, quad=None, cutout=None)
+                logger.warning("Dropping frame without detected marker: %s", exc)
+                return None
 
-        cutout = warp_square_cutout(image, fit_result.quad, self.out_size)
+            repainted = repaint_color_suppression_regions(image)
+            if self.debug:
+                _write_debug_image(self._debug_color_repaint_path, repainted)
+            try:
+                fit_result, line_debug = self._detect_fit(repainted)
+                detection_image = repainted
+                color_repaint_retry_used = True
+                logger.info("Marker detected after experimental color repaint retry.")
+            except RuntimeError as retry_exc:
+                self._write_debug_images(image, line_debug, quad=None, cutout=None)
+                logger.warning(
+                    "Dropping frame without detected marker after experimental color repaint retry: %s",
+                    retry_exc,
+                )
+                return None
+
+        cutout = warp_square_cutout(detection_image, fit_result.quad, self.out_size)
         self._write_debug_images(
-            image,
+            detection_image,
             line_debug,
             quad=fit_result.quad,
             cutout=cutout,
@@ -1371,6 +1491,7 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
                 "quad": fit_result.quad.tolist(),
                 "score": float(fit_result.score),
                 "quad_source": fit_result.source,
+                "color_repaint_retry_used": color_repaint_retry_used,
                 "input_shape": tuple(int(value) for value in image.shape),
             }
         )

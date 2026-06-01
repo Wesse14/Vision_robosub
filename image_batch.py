@@ -83,6 +83,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Write module debug images under the output directory.",
     )
     parser.add_argument(
+        "--experimental-color-repaint-retry",
+        action="store_true",
+        help="Retry marker detection after repainting yellow/blue suppression-mask pixels red.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -210,6 +215,11 @@ def write_image(path: Path, image: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(path), image):
         raise RuntimeError(f"Could not write image: {path}")
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def copy_marker_detected_quad(output_root: Path, source_image_path: Path, debug_dir: Path) -> None:
@@ -346,6 +356,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             output_queue="marker_cutouts",
             debug=args.debug,
             debug_dir=debug_dir / "marker",
+            experimental_color_repaint_retry=args.experimental_color_repaint_retry,
         )
         marker_result = await marker.process(message, context)
         if marker_result is None:
@@ -358,6 +369,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
                     output_queue="marker_cutouts",
                     debug=args.debug,
                     debug_dir=debug_dir / "marker",
+                    experimental_color_repaint_retry=args.experimental_color_repaint_retry,
                 )
                 marker_result = await marker.process(retry_message, context)
                 if marker_result is not None:
@@ -389,25 +401,42 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             debug_dir=debug_dir / "aruco",
         )
         aruco_result = await aruco.process(marker_message, context)
+        aruco_detection = aruco_result.message.payload
         write_image(
             output_dir / "03_aruco_detected.png",
-            aruco_result.message.payload.annotated_image,
+            aruco_detection.annotated_image,
         )
         write_image(
             output_dir / "04_aruco_high_contrast_retry.png",
-            aruco_result.message.payload.high_contrast_annotated_image,
+            aruco_detection.high_contrast_annotated_image,
         )
         write_image(
             output_dir / "05_aruco_mask_match.png",
-            aruco_result.message.payload.mask_match_image,
+            aruco_detection.mask_match_image,
         )
         write_image(
             output_dir / "06_aruco_grid.png",
-            aruco_result.message.payload.grid_image,
+            aruco_detection.grid_image,
         )
         write_image(
             output_dir / "07_aruco_grid_match.png",
-            aruco_result.message.payload.grid_match_image,
+            aruco_detection.grid_match_image,
+        )
+        write_text(
+            output_dir / "09_navigation_signal.txt",
+            "\n".join(
+                [
+                    f"signal={aruco_detection.navigation_signal}",
+                    f"marker_id={aruco_detection.navigation_marker_id}",
+                    f"reason={aruco_detection.navigation_reason}",
+                    f"aruco_ids={aruco_detection.ids}",
+                    f"mask_match_id={aruco_detection.mask_match_id}",
+                    f"mask_match_score={aruco_detection.mask_match_score:.3f}",
+                    f"grid_match_id={aruco_detection.grid_match_id}",
+                    f"grid_match_score={aruco_detection.grid_match_score:.3f}",
+                ]
+            )
+            + "\n",
         )
 
     if args.pipeline in {"gmm", "full"}:

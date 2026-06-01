@@ -12,6 +12,7 @@ import cv2
 import pytest
 
 import main as app_main
+import src.modules.aruco_detector as aruco_detector
 
 from src.modules.marker_rectifier import refine_candidate
 from src.modules.marker_rectifier import is_valid_quad
@@ -19,8 +20,16 @@ from src.modules.marker_rectifier import polygon_area
 from src.modules.marker_rectifier import refine_quad_to_inner_black_marker
 from src.modules.marker_rectifier import black_white_color_contrast_score
 from src.modules.marker_rectifier import blue_water_mask
+from src.modules.marker_rectifier import color_suppression_mask
+from src.modules.marker_rectifier import contour_candidate_has_marker_contrast
+from src.modules.marker_rectifier import find_contour_candidates
+from src.modules.marker_rectifier import repaint_color_suppression_regions
 from src.modules.marker_rectifier import white_marker_border_score
 from src.modules.marker_rectifier import quad_edge_clutter_penalty
+from src.modules.aruco_detector import _match_with_extended_fallback
+from src.modules.aruco_detector import marker_navigation_signal
+from src.modules.aruco_detector import MaskMatch
+from src.modules.aruco_detector import match_aruco_mask
 
 from src import (
     AsyncProcessor,
@@ -735,6 +744,114 @@ def test_blue_water_mask_detects_saturated_blue_regions() -> None:
 
     assert np.count_nonzero(mask[:, :40]) > 1200
     assert np.count_nonzero(mask[:, 40:]) == 0
+
+
+def test_color_suppression_mask_combines_yellow_and_blue_regions() -> None:
+    image = np.full((80, 120, 3), (30, 30, 30), dtype=np.uint8)
+    image[20:45, 10:35] = (20, 220, 220)
+    image[35:65, 70:105] = (220, 120, 20)
+
+    mask = color_suppression_mask(image)
+
+    assert np.count_nonzero(mask[20:45, 10:35]) > 500
+    assert np.count_nonzero(mask[35:65, 70:105]) > 800
+    assert np.count_nonzero(mask[:10, :]) == 0
+
+
+def test_repaint_color_suppression_regions_turns_masked_pixels_red() -> None:
+    image = np.full((40, 80, 3), (30, 30, 30), dtype=np.uint8)
+    image[:, :30] = (20, 220, 220)
+    image[:, 50:] = (220, 120, 20)
+
+    repainted = repaint_color_suppression_regions(image)
+    mask = color_suppression_mask(image)
+
+    assert np.all(repainted[mask > 0] == np.array([0, 0, 255], dtype=np.uint8))
+    assert np.any(np.all(repainted[mask == 0] == np.array([30, 30, 30], dtype=np.uint8), axis=1))
+
+
+def test_marker_contours_use_retr_tree_for_nested_threshold_regions() -> None:
+    mask = np.full((120, 120), 255, dtype=np.uint8)
+    cv2.rectangle(mask, (35, 35), (85, 85), 0, -1)
+
+    candidates = find_contour_candidates(mask, 120, 120, 400.0, 0)
+
+    centers = [np.mean(candidate.quad, axis=0) for candidate in candidates]
+    assert any(55 <= center[0] <= 65 and 55 <= center[1] <= 65 for center in centers)
+    assert all(candidate.source == "adaptive_contour" for candidate in candidates)
+
+
+def test_marker_contours_ignore_flat_regions_without_children() -> None:
+    mask = np.zeros((160, 160), dtype=np.uint8)
+    cv2.rectangle(mask, (30, 45), (130, 95), 255, -1)
+
+    candidates = find_contour_candidates(mask, 160, 160, 400.0, 0)
+
+    assert candidates == []
+
+
+def test_contour_candidate_contrast_rejects_low_variance_water_patch() -> None:
+    quad = np.array([[20, 20], [120, 20], [120, 120], [20, 120]], dtype=np.float32)
+    flat = np.full((140, 140, 3), (80, 90, 95), dtype=np.uint8)
+    marker_like = flat.copy()
+    marker_like[20:120, 20:120] = 245
+    marker_like[42:98, 42:98] = 10
+
+    assert not contour_candidate_has_marker_contrast(flat, quad)
+    assert contour_candidate_has_marker_contrast(marker_like, quad)
+
+
+def test_aruco_mask_match_falls_back_to_extended_templates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary_dir = tmp_path / "aruco_mask"
+    extended_dir = tmp_path / "aruco_mask_extend"
+    primary_dir.mkdir()
+    extended_dir.mkdir()
+
+    candidate = np.zeros((160, 160), dtype=np.uint8)
+    candidate[24:136, 24:136] = 255
+    candidate[48:80, 48:112] = 0
+    candidate[88:120, 64:128] = 0
+
+    wrong_template = np.zeros_like(candidate)
+    cv2.imwrite(str(primary_dir / "7.png"), wrong_template)
+    cv2.imwrite(str(extended_dir / "42.png"), candidate)
+    monkeypatch.setattr(aruco_detector, "DEFAULT_MASK_TEMPLATE_DIR", primary_dir)
+    monkeypatch.setattr(aruco_detector, "DEFAULT_EXTENDED_MASK_TEMPLATE_DIR", extended_dir)
+
+    match = _match_with_extended_fallback(candidate, match_aruco_mask)
+
+    assert match.marker_id == 42
+    assert match.score == pytest.approx(1.0)
+    assert match.template_source == str(extended_dir)
+
+
+def test_marker_navigation_signal_requires_matching_mask_and_grid_ids() -> None:
+    mask_match = MaskMatch(63, 0.70, 0, np.zeros((8, 8), dtype=np.uint8), None, "test")
+    grid_match = MaskMatch(10, 1.00, 0, np.zeros((8, 8), dtype=np.uint8), None, "test")
+
+    signal, marker_id, reason = marker_navigation_signal((63,), (), mask_match, grid_match)
+
+    assert signal == "TRY_AGAIN_MOVE_CLOSER"
+    assert marker_id is None
+    assert "mask and grid ids" in reason
+
+
+def test_marker_navigation_signal_requires_strong_mask_grid_agreement_without_aruco() -> None:
+    candidate = np.zeros((8, 8), dtype=np.uint8)
+    weak_mask = MaskMatch(63, 0.84, 0, candidate, None, "test")
+    strong_mask = MaskMatch(63, 0.90, 0, candidate, None, "test")
+    strong_grid = MaskMatch(63, 0.96, 0, candidate, None, "test")
+
+    weak_signal, weak_marker_id, _ = marker_navigation_signal((), (), weak_mask, strong_grid)
+    strong_signal, strong_marker_id, _ = marker_navigation_signal((), (), strong_mask, strong_grid)
+
+    assert weak_signal == "TRY_AGAIN_MOVE_CLOSER"
+    assert weak_marker_id is None
+    assert strong_signal == "NEXT"
+    assert strong_marker_id == 63
 
 
 def test_marker_rectification_debug_disabled_does_not_create_debug_files(tmp_path: Path) -> None:

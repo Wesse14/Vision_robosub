@@ -1,0 +1,365 @@
+12:56:28 [32mINFO[0m      [src.processor] Registered module image-enhancer on input queue frames
+12:56:28 [32mINFO[0m      [src.processor] Registered module enhanced-frame-fanout on input queue enhanced_frames
+12:56:32 [32mINFO[0m      [src.processor] Registered module gmm-color-mask on input queue gmm_frames
+12:56:32 [32mINFO[0m      [__main__] GMM color mask module enabled with model data\color_classifier_gmm.joblib
+12:56:32 [32mINFO[0m      [src.processor] Registered module marker-rectifier on input queue marker_frames
+12:56:32 [32mINFO[0m      [src.processor] Registered module aruco-detector on input queue marker_cutouts
+12:56:32 [32mINFO[0m      [src.processor] Registered module frame-rate-logger on input queue aruco_detections
+12:56:32 [32mINFO[0m      [src.video] Opened video data\test_videos\Dji 20260522104555 0006 D - Trim.mp4 (1920x1080, 591 frame(s), 25.03 FPS)
+12:56:32 [32mINFO[0m      [__main__] Reading frames from data\test_videos\Dji 20260522104555 0006 D - Trim.mp4. Press Ctrl+C to stop.
+12:56:32 [32mINFO[0m      [src.loop] Processor loop waiting for interrupt signal(s): SIGINT, SIGTERM
+12:56:32 [32mINFO[0m      [src.loop] Processor loop starting
+12:56:32 [32mINFO[0m      [src.processor] Starting processor with 6 module(s)
+12:56:46 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with cleaned_otsu_2x preprocessing (consensus): 63
+12:56:46 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.922 at 270 degrees from data\aruco_mask
+12:56:46 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+12:56:49 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:56:49 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 0 with score 0.694 at 90 degrees from data\aruco_mask
+12:56:49 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 87 with score 0.898 at 270 degrees from data\aruco_mask
+12:56:49 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.06 FPS (1 total item(s), source loop 0)
+12:56:57 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with cleaned_adaptive_2x preprocessing (consensus): 0
+12:56:57 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 0 with score 0.686 at 0 degrees from data\aruco_mask
+12:56:57 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 69 with score 0.918 at 90 degrees from data\aruco_mask
+12:56:57 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.24 FPS (3 total item(s), source loop 0)
+12:57:02 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:57:02 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.914 at 270 degrees from data\aruco_mask
+12:57:02 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+12:57:02 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.19 FPS (4 total item(s), source loop 0)
+12:57:09 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with cleaned_adaptive_2x preprocessing (consensus): 0
+12:57:09 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 10 with score 0.680 at 180 degrees from data\aruco_mask
+12:57:09 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 0 with score 0.959 at 0 degrees from data\aruco_mask
+12:57:10 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (5 total item(s), source loop 0)
+12:57:16 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:57:16 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 13 with score 0.708 at 0 degrees from data\aruco_mask
+12:57:16 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 13 with score 0.939 at 0 degrees from data\aruco_mask
+12:57:17 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (6 total item(s), source loop 0)
+12:57:21 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:57:21 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.946 at 270 degrees from data\aruco_mask
+12:57:21 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+12:57:21 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.23 FPS (7 total item(s), source loop 0)
+12:57:26 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:57:26 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.910 at 270 degrees from data\aruco_mask
+12:57:26 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+12:57:26 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.18 FPS (8 total item(s), source loop 0)
+12:57:35 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with adaptive_gaussian_2x preprocessing (consensus): 0
+12:57:35 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 79 with score 0.732 at 270 degrees from data\aruco_mask
+12:57:35 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 79 with score 0.918 at 270 degrees from data\aruco_mask
+12:57:35 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.12 FPS (9 total item(s), source loop 0)
+12:57:43 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with adaptive_gaussian_2x preprocessing (consensus): 0
+12:57:43 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 31 with score 0.655 at 90 degrees from data\aruco_mask
+12:57:43 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 19 with score 0.898 at 90 degrees from data\aruco_mask
+12:57:43 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.12 FPS (10 total item(s), source loop 0)
+12:57:51 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:57:51 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 21 with score 0.619 at 270 degrees from data\aruco_mask
+12:57:51 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 77 with score 0.918 at 90 degrees from data\aruco_mask
+12:57:51 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.12 FPS (11 total item(s), source loop 0)
+12:57:56 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu_2x preprocessing (consensus): 63
+12:57:56 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 21 with score 0.774 at 270 degrees from data\aruco_mask
+12:57:56 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 60 with score 0.878 at 180 degrees from data\aruco_mask
+12:57:56 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.20 FPS (12 total item(s), source loop 0)
+12:58:01 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+12:58:02 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:58:02 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 80 with score 0.701 at 180 degrees from data\aruco_mask
+12:58:02 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 80 with score 0.939 at 180 degrees from data\aruco_mask
+12:58:02 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.17 FPS (13 total item(s), source loop 0)
+12:58:09 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with cleaned_otsu_2x preprocessing (consensus): 0
+12:58:09 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 0 with score 0.819 at 180 degrees from data\aruco_mask
+12:58:09 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 0 with score 0.918 at 0 degrees from data\aruco_mask
+12:58:09 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (14 total item(s), source loop 0)
+12:58:17 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with adaptive_mean_2x preprocessing (consensus): 0
+12:58:17 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 0 with score 0.810 at 0 degrees from data\aruco_mask
+12:58:17 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 0 with score 0.939 at 0 degrees from data\aruco_mask
+12:58:17 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (15 total item(s), source loop 0)
+12:58:23 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:58:23 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.753 at 0 degrees from data\aruco_mask
+12:58:23 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 61 with score 0.898 at 0 degrees from data\aruco_mask
+12:58:24 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.16 FPS (16 total item(s), source loop 0)
+12:58:29 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:58:29 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 21 with score 0.816 at 270 degrees from data\aruco_mask
+12:58:29 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 53 with score 0.918 at 270 degrees from data\aruco_mask
+12:58:30 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.17 FPS (17 total item(s), source loop 0)
+12:58:34 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened preprocessing (consensus): 0
+12:58:34 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.896 at 270 degrees from data\aruco_mask
+12:58:34 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+12:58:34 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.21 FPS (18 total item(s), source loop 0)
+12:58:42 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened_2x preprocessing (consensus): 0
+12:58:42 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 53 with score 0.846 at 270 degrees from data\aruco_mask
+12:58:42 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 270 degrees from data\aruco_mask
+12:58:42 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (19 total item(s), source loop 0)
+12:58:48 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:58:48 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.769 at 0 degrees from data\aruco_mask
+12:58:48 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 0 degrees from data\aruco_mask
+12:58:48 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.17 FPS (20 total item(s), source loop 0)
+12:58:56 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu_2x preprocessing (consensus): 63
+12:58:56 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 92 with score 0.725 at 270 degrees from data\aruco_mask
+12:58:56 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 53 with score 0.898 at 0 degrees from data\aruco_mask
+12:58:56 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.12 FPS (21 total item(s), source loop 0)
+12:59:09 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:59:09 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.809 at 270 degrees from data\aruco_mask
+12:59:09 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.898 at 180 degrees from data\aruco_mask
+12:59:09 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.08 FPS (22 total item(s), source loop 0)
+12:59:18 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:59:18 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 21 with score 0.831 at 270 degrees from data\aruco_mask
+12:59:18 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 21 with score 0.898 at 270 degrees from data\aruco_mask
+12:59:19 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.11 FPS (23 total item(s), source loop 0)
+12:59:29 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with adaptive_mean_2x preprocessing (consensus): 0
+12:59:29 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 0 with score 0.823 at 180 degrees from data\aruco_mask
+12:59:29 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 0 with score 0.918 at 180 degrees from data\aruco_mask
+12:59:29 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.10 FPS (24 total item(s), source loop 0)
+12:59:41 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened preprocessing (consensus): 0
+12:59:41 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 0 with score 0.816 at 180 degrees from data\aruco_mask
+12:59:41 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 0 with score 0.939 at 270 degrees from data\aruco_mask
+12:59:41 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.08 FPS (25 total item(s), source loop 0)
+12:59:47 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened_2x preprocessing (consensus): 0
+12:59:47 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.841 at 270 degrees from data\aruco_mask
+12:59:47 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 60 with score 0.980 at 270 degrees from data\aruco_mask
+12:59:48 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.16 FPS (26 total item(s), source loop 0)
+12:59:55 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+12:59:55 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 92 with score 0.710 at 270 degrees from data\aruco_mask
+12:59:55 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 95 with score 0.898 at 180 degrees from data\aruco_mask
+12:59:55 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (27 total item(s), source loop 0)
+13:00:04 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:00:04 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.773 at 0 degrees from data\aruco_mask
+13:00:04 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 0 with score 0.939 at 90 degrees from data\aruco_mask
+13:00:04 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.10 FPS (28 total item(s), source loop 0)
+13:00:10 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:00:11 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:00:11 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.729 at 270 degrees from data\aruco_mask
+13:00:11 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 95 with score 0.878 at 180 degrees from data\aruco_mask
+13:00:12 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (29 total item(s), source loop 0)
+13:00:18 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened_2x preprocessing (consensus): 0
+13:00:18 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 15 with score 0.805 at 270 degrees from data\aruco_mask
+13:00:18 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 15 with score 0.980 at 270 degrees from data\aruco_mask
+13:00:18 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (30 total item(s), source loop 0)
+13:00:23 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with equalized preprocessing (consensus): 0
+13:00:23 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.949 at 270 degrees from data\aruco_mask
+13:00:23 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+13:00:23 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.20 FPS (31 total item(s), source loop 0)
+13:00:30 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened preprocessing (consensus): 0
+13:00:30 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.865 at 270 degrees from data\aruco_mask
+13:00:30 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 270 degrees from data\aruco_mask
+13:00:30 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (32 total item(s), source loop 0)
+13:00:38 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:00:38 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 21 with score 0.727 at 0 degrees from data\aruco_mask
+13:00:38 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 61 with score 0.878 at 0 degrees from data\aruco_mask
+13:00:38 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.12 FPS (33 total item(s), source loop 0)
+13:00:46 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with gray preprocessing (consensus): 0
+13:00:46 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 5 with score 0.671 at 270 degrees from data\aruco_mask
+13:00:46 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 21 with score 0.980 at 180 degrees from data\aruco_mask
+13:00:46 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (34 total item(s), source loop 0)
+13:00:53 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:00:53 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 15 with score 0.786 at 270 degrees from data\aruco_mask
+13:00:53 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 15 with score 0.980 at 270 degrees from data\aruco_mask
+13:00:53 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (35 total item(s), source loop 0)
+13:00:59 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu_2x preprocessing (consensus): 63
+13:00:59 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.812 at 270 degrees from data\aruco_mask
+13:00:59 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 60 with score 0.939 at 270 degrees from data\aruco_mask
+13:00:59 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (36 total item(s), source loop 0)
+13:01:07 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with equalized preprocessing (consensus): 0
+13:01:07 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.736 at 180 degrees from data\aruco_mask
+13:01:07 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 84 with score 0.939 at 270 degrees from data\aruco_mask
+13:01:07 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (37 total item(s), source loop 0)
+13:01:14 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:01:14 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.737 at 180 degrees from data\aruco_mask
+13:01:14 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 180 degrees from data\aruco_mask
+13:01:14 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (38 total item(s), source loop 0)
+13:01:21 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:01:21 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.863 at 270 degrees from data\aruco_mask
+13:01:21 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+13:01:21 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (39 total item(s), source loop 0)
+13:01:29 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:01:29 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 10 with score 0.675 at 270 degrees from data\aruco_mask_extend
+13:01:29 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 10 with score 0.939 at 270 degrees from data\aruco_mask
+13:01:29 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (40 total item(s), source loop 0)
+13:01:35 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu preprocessing (consensus): 63
+13:01:35 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.867 at 270 degrees from data\aruco_mask
+13:01:35 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 61 with score 0.939 at 270 degrees from data\aruco_mask
+13:01:36 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (41 total item(s), source loop 0)
+13:01:42 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu_2x preprocessing (consensus): 63
+13:01:42 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.740 at 180 degrees from data\aruco_mask
+13:01:42 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 180 degrees from data\aruco_mask
+13:01:43 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (42 total item(s), source loop 0)
+13:01:50 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with black_white_strong_2x preprocessing (consensus): 0
+13:01:50 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.707 at 180 degrees from data\aruco_mask
+13:01:50 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.918 at 180 degrees from data\aruco_mask
+13:01:51 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.12 FPS (43 total item(s), source loop 0)
+13:01:58 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with equalized preprocessing (consensus): 0
+13:01:58 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.781 at 270 degrees from data\aruco_mask
+13:01:58 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 31 with score 0.918 at 270 degrees from data\aruco_mask
+13:01:58 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (44 total item(s), source loop 0)
+13:02:05 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:02:05 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.713 at 180 degrees from data\aruco_mask
+13:02:05 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 92 with score 0.918 at 270 degrees from data\aruco_mask
+13:02:05 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (45 total item(s), source loop 0)
+13:02:12 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened_2x preprocessing (consensus): 0
+13:02:12 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 5 with score 0.661 at 270 degrees from data\aruco_mask
+13:02:12 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 20 with score 1.000 at 180 degrees from data\aruco_mask
+13:02:12 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (46 total item(s), source loop 0)
+13:02:20 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with adaptive_gaussian_2x preprocessing (consensus): 0
+13:02:20 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 20 with score 0.725 at 0 degrees from data\aruco_mask
+13:02:20 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 20 with score 0.898 at 0 degrees from data\aruco_mask
+13:02:20 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (47 total item(s), source loop 0)
+13:02:25 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with opened_adaptive_2x preprocessing (consensus): 0
+13:02:25 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.870 at 270 degrees from data\aruco_mask
+13:02:25 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 270 degrees from data\aruco_mask
+13:02:25 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.19 FPS (48 total item(s), source loop 0)
+13:02:33 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened_2x preprocessing (consensus): 0
+13:02:33 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 53 with score 0.861 at 270 degrees from data\aruco_mask
+13:02:33 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 61 with score 0.939 at 270 degrees from data\aruco_mask
+13:02:33 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (49 total item(s), source loop 0)
+13:02:39 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with cleaned_otsu_2x preprocessing (consensus): 63
+13:02:39 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.817 at 270 degrees from data\aruco_mask
+13:02:39 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.918 at 180 degrees from data\aruco_mask
+13:02:39 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.16 FPS (50 total item(s), source loop 0)
+13:02:47 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu_2x preprocessing (consensus): 63
+13:02:47 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.806 at 180 degrees from data\aruco_mask
+13:02:47 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.918 at 180 degrees from data\aruco_mask
+13:02:47 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (51 total item(s), source loop 0)
+13:02:53 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:02:53 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.730 at 0 degrees from data\aruco_mask
+13:02:53 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.918 at 0 degrees from data\aruco_mask
+13:02:53 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (52 total item(s), source loop 0)
+13:02:59 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with cleaned_otsu_2x preprocessing (consensus): 63
+13:02:59 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 45 with score 0.798 at 270 degrees from data\aruco_mask
+13:02:59 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 47 with score 0.939 at 270 degrees from data\aruco_mask
+13:02:59 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.17 FPS (53 total item(s), source loop 0)
+13:03:07 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with adaptive_gaussian_2x preprocessing (consensus): 0
+13:03:07 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.803 at 270 degrees from data\aruco_mask
+13:03:07 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 270 degrees from data\aruco_mask
+13:03:07 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (54 total item(s), source loop 0)
+13:03:11 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:03:12 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:03:12 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.802 at 270 degrees from data\aruco_mask
+13:03:12 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.980 at 270 degrees from data\aruco_mask
+13:03:12 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.19 FPS (55 total item(s), source loop 0)
+13:03:17 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:03:18 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:03:18 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.860 at 270 degrees from data\aruco_mask
+13:03:18 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 60 with score 0.980 at 270 degrees from data\aruco_mask
+13:03:18 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.17 FPS (56 total item(s), source loop 0)
+13:03:24 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu_2x preprocessing (consensus): 63
+13:03:24 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 61 with score 0.851 at 270 degrees from data\aruco_mask
+13:03:24 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 61 with score 0.918 at 270 degrees from data\aruco_mask
+13:03:24 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.17 FPS (57 total item(s), source loop 0)
+13:03:30 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with cleaned_otsu_2x preprocessing (consensus): 63
+13:03:30 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 61 with score 0.840 at 270 degrees from data\aruco_mask
+13:03:30 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 61 with score 0.918 at 270 degrees from data\aruco_mask
+13:03:30 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.17 FPS (58 total item(s), source loop 0)
+13:03:37 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with black_white_strong_2x preprocessing (consensus): 0
+13:03:37 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.894 at 270 degrees from data\aruco_mask
+13:03:37 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.980 at 270 degrees from data\aruco_mask
+13:03:37 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (59 total item(s), source loop 0)
+13:03:42 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:03:44 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:03:44 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 5 with score 0.692 at 270 degrees from data\aruco_mask
+13:03:44 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 21 with score 1.000 at 180 degrees from data\aruco_mask
+13:03:44 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (60 total item(s), source loop 0)
+13:03:50 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with opened_adaptive_2x preprocessing (consensus): 0
+13:03:50 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.761 at 180 degrees from data\aruco_mask
+13:03:50 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 180 degrees from data\aruco_mask
+13:03:50 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.17 FPS (61 total item(s), source loop 0)
+13:03:56 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:03:58 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:03:58 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.823 at 270 degrees from data\aruco_mask
+13:03:58 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 60 with score 0.980 at 270 degrees from data\aruco_mask
+13:03:59 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.11 FPS (62 total item(s), source loop 0)
+13:04:08 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened_2x preprocessing (consensus): 0
+13:04:08 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.908 at 270 degrees from data\aruco_mask
+13:04:08 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+13:04:08 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.10 FPS (63 total item(s), source loop 0)
+13:04:17 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu_2x preprocessing (consensus): 63
+13:04:17 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.741 at 180 degrees from data\aruco_mask
+13:04:17 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.939 at 180 degrees from data\aruco_mask
+13:04:17 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.11 FPS (64 total item(s), source loop 0)
+13:04:25 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with adaptive_mean_2x preprocessing (consensus): 0
+13:04:25 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.728 at 180 degrees from data\aruco_mask
+13:04:25 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 84 with score 0.939 at 270 degrees from data\aruco_mask
+13:04:25 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.13 FPS (65 total item(s), source loop 0)
+13:04:32 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu_2x preprocessing (consensus): 63
+13:04:32 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.796 at 270 degrees from data\aruco_mask
+13:04:32 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.959 at 270 degrees from data\aruco_mask
+13:04:32 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (66 total item(s), source loop 0)
+13:04:39 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened preprocessing (consensus): 0
+13:04:39 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 41 with score 0.694 at 270 degrees from data\aruco_mask
+13:04:39 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 21 with score 0.898 at 270 degrees from data\aruco_mask
+13:04:39 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (67 total item(s), source loop 0)
+13:04:46 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with cleaned_adaptive preprocessing (consensus): 0
+13:04:46 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.812 at 270 degrees from data\aruco_mask
+13:04:46 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 60 with score 0.939 at 270 degrees from data\aruco_mask
+13:04:47 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.12 FPS (68 total item(s), source loop 0)
+13:04:52 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:04:53 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:04:53 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 16 with score 0.768 at 90 degrees from data\aruco_mask
+13:04:53 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 16 with score 0.918 at 90 degrees from data\aruco_mask
+13:04:53 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.15 FPS (69 total item(s), source loop 0)
+13:05:00 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:05:00 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.810 at 180 degrees from data\aruco_mask
+13:05:00 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.918 at 180 degrees from data\aruco_mask
+13:05:01 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.14 FPS (70 total item(s), source loop 0)
+13:05:33 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu preprocessing (consensus): 63
+13:05:33 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.817 at 270 degrees from data\aruco_mask
+13:05:33 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 60 with score 0.939 at 270 degrees from data\aruco_mask
+13:05:34 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.03 FPS (71 total item(s), source loop 0)
+13:06:09 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:06:15 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:06:15 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.859 at 270 degrees from data\aruco_mask
+13:06:15 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 61 with score 0.918 at 270 degrees from data\aruco_mask
+13:06:16 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.02 FPS (72 total item(s), source loop 0)
+13:06:42 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened_2x preprocessing (consensus): 0
+13:06:42 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.857 at 270 degrees from data\aruco_mask
+13:06:42 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.918 at 270 degrees from data\aruco_mask
+13:06:43 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.04 FPS (73 total item(s), source loop 0)
+13:07:09 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:07:14 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:07:14 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 15 with score 0.786 at 270 degrees from data\aruco_mask
+13:07:14 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 15 with score 0.959 at 270 degrees from data\aruco_mask
+13:07:15 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.03 FPS (74 total item(s), source loop 0)
+13:07:35 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:07:35 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.749 at 270 degrees from data\aruco_mask
+13:07:35 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.898 at 270 degrees from data\aruco_mask
+13:07:35 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.05 FPS (75 total item(s), source loop 0)
+13:07:46 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:07:47 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:07:47 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.783 at 270 degrees from data\aruco_mask
+13:07:47 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 95 with score 0.939 at 270 degrees from data\aruco_mask
+13:07:47 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.08 FPS (76 total item(s), source loop 0)
+13:07:55 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:07:58 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:07:58 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 20 with score 0.721 at 180 degrees from data\aruco_mask
+13:07:58 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 20 with score 1.000 at 180 degrees from data\aruco_mask
+13:07:58 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.10 FPS (77 total item(s), source loop 0)
+13:08:08 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with adaptive_gaussian_2x preprocessing (consensus): 0
+13:08:08 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.848 at 270 degrees from data\aruco_mask
+13:08:08 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+13:08:08 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.10 FPS (78 total item(s), source loop 0)
+13:08:16 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:08:17 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:08:17 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.922 at 270 degrees from data\aruco_mask
+13:08:17 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+13:08:17 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.11 FPS (79 total item(s), source loop 0)
+13:08:44 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with sharpened_2x preprocessing (consensus): 0
+13:08:44 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 20 with score 0.682 at 180 degrees from data\aruco_mask
+13:08:44 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 20 with score 1.000 at 180 degrees from data\aruco_mask
+13:08:45 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.04 FPS (80 total item(s), source loop 0)
+13:09:15 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with otsu preprocessing (consensus): 63
+13:09:15 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.813 at 270 degrees from data\aruco_mask
+13:09:15 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 93 with score 0.878 at 270 degrees from data\aruco_mask
+13:09:16 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.03 FPS (81 total item(s), source loop 0)
+13:09:53 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with equalized preprocessing (consensus): 0
+13:09:53 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.854 at 270 degrees from data\aruco_mask
+13:09:53 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+13:09:54 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.03 FPS (82 total item(s), source loop 0)
+13:10:28 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:10:34 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:10:34 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.842 at 270 degrees from data\aruco_mask
+13:10:34 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 1.000 at 270 degrees from data\aruco_mask
+13:10:35 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.02 FPS (83 total item(s), source loop 0)
+13:11:12 [32mINFO[0m      [src.modules.aruco_detector] Detected ArUco marker id(s) with gray preprocessing (consensus): 0
+13:11:12 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 63 with score 0.845 at 270 degrees from data\aruco_mask
+13:11:12 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 63 with score 0.980 at 270 degrees from data\aruco_mask
+13:11:13 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.03 FPS (84 total item(s), source loop 0)
+13:11:47 [33mWARNING[0m   [src.modules.aruco_detector] Ignoring low-confidence ArUco id(s) without preprocessing consensus: 0
+13:11:52 [33mWARNING[0m   [src.modules.aruco_detector] No ArUco marker detected in rectified cutout.
+13:11:52 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco mask match id 95 with score 0.815 at 270 degrees from data\aruco_mask
+13:11:52 [32mINFO[0m      [src.modules.aruco_detector] Best ArUco grid match id 60 with score 0.980 at 270 degrees from data\aruco_mask
+13:11:53 [32mINFO[0m      [src.modules.frame_rate_logger] Processing frame rate: 0.02 FPS (85 total item(s), source loop 0)
