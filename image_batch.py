@@ -83,6 +83,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Write module debug images under the output directory.",
     )
     parser.add_argument(
+        "--save-marker-quads",
+        action="store_true",
+        help="Write marker detected quad summary images without enabling full debug output.",
+    )
+    parser.add_argument(
         "--experimental-color-repaint-retry",
         action="store_true",
         help="Retry marker detection after repainting yellow/blue suppression-mask pixels red.",
@@ -222,15 +227,79 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def copy_marker_detected_quad(output_root: Path, source_image_path: Path, debug_dir: Path) -> None:
-    quad_path = debug_dir / "marker" / "marker_detected_quad.png"
-    if not quad_path.exists():
-        return
+def draw_summary_label(image: np.ndarray, label: str) -> np.ndarray:
+    canvas = image.copy()
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.72
+    thickness = 2
+    padding = 10
+    (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+    cv2.rectangle(
+        canvas,
+        (0, 0),
+        (min(canvas.shape[1], text_w + padding * 2), text_h + baseline + padding * 2),
+        (0, 0, 0),
+        -1,
+    )
+    color = (0, 200, 0) if label.startswith("NEXT") else (0, 0, 255)
+    cv2.putText(
+        canvas,
+        label,
+        (padding, padding + text_h),
+        font,
+        font_scale,
+        color,
+        thickness,
+        cv2.LINE_AA,
+    )
+    return canvas
 
+
+def draw_marker_detected_quad_summary(
+    image: np.ndarray,
+    quad: Sequence[Sequence[float]],
+    label: str | None = None,
+) -> np.ndarray:
+    canvas = image.copy()
+    points = np.rint(np.asarray(quad, dtype=np.float32)).astype(np.int32)
+    cv2.polylines(canvas, [points], True, (0, 255, 0), 3, cv2.LINE_AA)
+    if label:
+        canvas = draw_summary_label(canvas, label)
+    return canvas
+
+
+def marker_summary_label(signal: str, marker_id: int | None) -> str:
+    return f"{signal}: ID {marker_id}" if marker_id is not None else signal
+
+
+def save_marker_detected_quad_summary(
+    output_root: Path,
+    source_image_path: Path,
+    debug_dir: Path,
+    marker_input_image: np.ndarray | None,
+    marker_metadata: dict,
+    label: str | None = None,
+) -> None:
     summary_dir = output_root / QUAD_SUMMARY_DIR_NAME
     summary_dir.mkdir(parents=True, exist_ok=True)
     output_path = summary_dir / f"{source_image_path.stem}_marker_detected_quad.png"
-    shutil.copy2(quad_path, output_path)
+
+    quad_path = debug_dir / "marker" / "marker_detected_quad.png"
+    if quad_path.exists():
+        image = cv2.imread(str(quad_path), cv2.IMREAD_COLOR)
+        if image is None:
+            logger.warning("Could not read marker detected quad debug image: %s", quad_path)
+            return
+        if label:
+            image = draw_summary_label(image, label)
+        write_image(output_path, image)
+        return
+
+    quad = marker_metadata.get("quad")
+    if marker_input_image is None or quad is None:
+        return
+
+    write_image(output_path, draw_marker_detected_quad_summary(marker_input_image, quad, label))
 
 
 def payload_image(payload: VideoFrame | np.ndarray) -> np.ndarray:
@@ -349,7 +418,10 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
 
     marker_image = None
     marker_message = None
+    marker_input_image = None
+    navigation_label = None
     if args.pipeline in {"marker", "aruco", "full"}:
+        marker_input_image = payload_image(message.payload).copy()
         marker = MarkerRectificationModule(
             name="marker-rectifier",
             input_queue="frames",
@@ -363,6 +435,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             for retry_message in marker_retry_messages(original_message, message):
                 attempt = retry_message.metadata["marker_preprocess_attempt"]
                 logger.info("Retrying marker detection for %s with %s preprocessing", path, attempt)
+                retry_input_image = payload_image(retry_message.payload).copy()
                 marker = MarkerRectificationModule(
                     name=f"marker-rectifier-{attempt}",
                     input_queue="frames",
@@ -373,6 +446,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
                 )
                 marker_result = await marker.process(retry_message, context)
                 if marker_result is not None:
+                    marker_input_image = retry_input_image
                     logger.info("Marker detected in %s after %s preprocessing", path, attempt)
                     break
             if marker_result is None:
@@ -390,7 +464,6 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             attempt = marker_message.metadata.get("marker_preprocess_attempt", "initial")
             if attempt != "initial":
                 write_image(output_dir / f"02_marker_cutout_{attempt}.png", marker_image)
-            copy_marker_detected_quad(args.output_dir, path, debug_dir)
 
     if args.pipeline in {"aruco", "full"} and marker_image is not None and marker_message is not None:
         aruco = ArucoDetectionModule(
@@ -402,6 +475,10 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
         )
         aruco_result = await aruco.process(marker_message, context)
         aruco_detection = aruco_result.message.payload
+        navigation_label = marker_summary_label(
+            aruco_detection.navigation_signal,
+            aruco_detection.navigation_marker_id,
+        )
         write_image(
             output_dir / "03_aruco_detected.png",
             aruco_detection.annotated_image,
@@ -437,6 +514,16 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
                 ]
             )
             + "\n",
+        )
+
+    if marker_message is not None and (args.debug or args.save_marker_quads):
+        save_marker_detected_quad_summary(
+            args.output_dir,
+            path,
+            debug_dir,
+            marker_input_image,
+            marker_message.metadata,
+            navigation_label,
         )
 
     if args.pipeline in {"gmm", "full"}:

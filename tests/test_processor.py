@@ -11,6 +11,7 @@ import numpy as np
 import cv2
 import pytest
 
+import image_batch
 import main as app_main
 import src.modules.aruco_detector as aruco_detector
 
@@ -22,7 +23,10 @@ from src.modules.marker_rectifier import black_white_color_contrast_score
 from src.modules.marker_rectifier import blue_water_mask
 from src.modules.marker_rectifier import color_suppression_mask
 from src.modules.marker_rectifier import contour_candidate_has_marker_contrast
+from src.modules.marker_rectifier import Candidate
 from src.modules.marker_rectifier import find_contour_candidates
+from src.modules.marker_rectifier import find_contour_hough_hybrid_candidates
+from src.modules.marker_rectifier import LineDebug
 from src.modules.marker_rectifier import repaint_color_suppression_regions
 from src.modules.marker_rectifier import white_marker_border_score
 from src.modules.marker_rectifier import quad_edge_clutter_penalty
@@ -674,6 +678,54 @@ def test_marker_quad_validation_rejects_nearly_triangular_shapes() -> None:
     assert not is_valid_quad(bad_quad, width=480, height=360, min_area=400.0)
 
 
+def test_marker_quad_validation_rejects_extreme_side_ratios() -> None:
+    bad_quad = np.array(
+        [[40, 40], [310, 48], [300, 95], [45, 165]],
+        dtype=np.float32,
+    )
+
+    assert not is_valid_quad(bad_quad, width=480, height=360, min_area=400.0)
+
+
+def test_marker_quad_validation_rejects_extreme_angles() -> None:
+    bad_quad = np.array(
+        [[80, 80], [320, 110], [285, 180], [95, 300]],
+        dtype=np.float32,
+    )
+
+    assert not is_valid_quad(bad_quad, width=480, height=360, min_area=400.0)
+
+
+def test_marker_quad_validation_rejects_nearly_full_frame_bbox() -> None:
+    bad_quad = np.array(
+        [[8, 8], [472, 12], [468, 352], [12, 350]],
+        dtype=np.float32,
+    )
+
+    assert not is_valid_quad(bad_quad, width=480, height=360, min_area=400.0)
+
+
+def test_marker_quad_summary_can_include_navigation_signal_without_debug(tmp_path: Path) -> None:
+    image = np.full((120, 160, 3), 220, dtype=np.uint8)
+    quad = [[30, 25], [125, 28], [120, 95], [35, 92]]
+
+    image_batch.save_marker_detected_quad_summary(
+        tmp_path,
+        Path("foto_00145.jpg"),
+        tmp_path / "missing_debug",
+        image,
+        {"quad": quad},
+        "NEXT: ID 63",
+    )
+
+    output_path = tmp_path / image_batch.QUAD_SUMMARY_DIR_NAME / "foto_00145_marker_detected_quad.png"
+    output = cv2.imread(str(output_path))
+
+    assert output is not None
+    assert np.any(output[:, :, 1] > output[:, :, 2] + 40)
+    assert np.any(output[:40, :, :] < 80)
+
+
 def test_marker_quad_refinement_moves_to_inner_black_marker() -> None:
     image = np.full((300, 300, 3), 130, dtype=np.uint8)
     outer = np.array([[40, 40], [260, 40], [260, 260], [40, 260]], dtype=np.int32)
@@ -771,7 +823,8 @@ def test_repaint_color_suppression_regions_turns_masked_pixels_red() -> None:
 
 
 def test_marker_contours_use_retr_tree_for_nested_threshold_regions() -> None:
-    mask = np.full((120, 120), 255, dtype=np.uint8)
+    mask = np.zeros((120, 120), dtype=np.uint8)
+    cv2.rectangle(mask, (20, 20), (100, 100), 255, -1)
     cv2.rectangle(mask, (35, 35), (85, 85), 0, -1)
 
     candidates = find_contour_candidates(mask, 120, 120, 400.0, 0)
@@ -788,6 +841,39 @@ def test_marker_contours_ignore_flat_regions_without_children() -> None:
     candidates = find_contour_candidates(mask, 160, 160, 400.0, 0)
 
     assert candidates == []
+
+
+def test_marker_contour_hough_hybrid_snaps_contour_to_supported_lines() -> None:
+    contour_quad = np.array([[22, 22], [118, 20], [122, 118], [18, 120]], dtype=np.float32)
+    contour_candidates = [Candidate(quad=contour_quad, source="adaptive_contour", variant_idx=0)]
+    horizontal_lines = np.array(
+        [
+            [20, 20, 120, 20],
+            [20, 120, 120, 120],
+        ],
+        dtype=np.float32,
+    )
+    vertical_lines = np.array(
+        [
+            [20, 20, 20, 120],
+            [120, 20, 120, 120],
+        ],
+        dtype=np.float32,
+    )
+    debug = LineDebug(
+        variant_idx=0,
+        lines=np.vstack([horizontal_lines, vertical_lines]),
+        family_a=horizontal_lines,
+        family_b=vertical_lines,
+        candidates=[],
+    )
+
+    candidates = find_contour_hough_hybrid_candidates(contour_candidates, (debug,), 160, 160, 400.0, 0)
+
+    assert len(candidates) == 1
+    assert candidates[0].source == "contour_hough_hybrid"
+    expected_quad = np.array([[20, 20], [120, 20], [120, 120], [20, 120]], dtype=np.float32)
+    assert np.mean(np.linalg.norm(candidates[0].quad - expected_quad, axis=1)) < 1.0
 
 
 def test_contour_candidate_contrast_rejects_low_variance_water_patch() -> None:

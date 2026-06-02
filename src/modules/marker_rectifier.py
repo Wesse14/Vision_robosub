@@ -18,6 +18,12 @@ from .image_enhancer import EnhancementMode, apply_enhancement, validate_color_i
 logger = logging.getLogger(__name__)
 
 ALLOWED_ARUCO_IDS = frozenset(range(101))
+MAX_QUAD_SIDE_RATIO = 2.8
+MAX_QUAD_OPPOSITE_SIDE_RATIO = 2.2
+MIN_QUAD_ANGLE_DEG = 50.0
+MAX_QUAD_ANGLE_DEG = 130.0
+MAX_QUAD_BBOX_AREA_RATIO = 0.82
+MAX_QUAD_BBOX_SIDE_FRACTION = 0.92
 
 @dataclass
 class EdgeArtifacts:
@@ -320,6 +326,16 @@ def polygon_area(quad: np.ndarray) -> float:
     return abs(signed_area(quad))
 
 
+def quad_bbox_fraction(quad: np.ndarray, width: int, height: int) -> tuple[float, float, float]:
+    quad = order_corners(quad)
+    x0, y0 = np.min(quad, axis=0)
+    x1, y1 = np.max(quad, axis=0)
+    bbox_w_fraction = float(x1 - x0) / max(float(width), 1.0)
+    bbox_h_fraction = float(y1 - y0) / max(float(height), 1.0)
+    bbox_area_fraction = bbox_w_fraction * bbox_h_fraction
+    return bbox_w_fraction, bbox_h_fraction, bbox_area_fraction
+
+
 def is_convex_quad(quad: np.ndarray) -> bool:
     quad = np.asarray(quad, dtype=np.float32)
     crosses = []
@@ -362,9 +378,17 @@ def quad_shape_penalty(quad: np.ndarray) -> float:
     side_ratio = float(np.max(lengths) / max(np.min(lengths), 1e-6))
     opposite_ratio_a = float(max(lengths[0], lengths[2]) / max(min(lengths[0], lengths[2]), 1e-6))
     opposite_ratio_b = float(max(lengths[1], lengths[3]) / max(min(lengths[1], lengths[3]), 1e-6))
-    angle_penalty = float(np.sum(np.maximum(0.0, 40.0 - angles) + np.maximum(0.0, angles - 140.0))) * 0.35
-    side_penalty = max(0.0, side_ratio - 4.0) * 4.0
-    opposite_penalty = (max(0.0, opposite_ratio_a - 3.5) + max(0.0, opposite_ratio_b - 3.5)) * 3.0
+    angle_penalty = float(
+        np.sum(
+            np.maximum(0.0, MIN_QUAD_ANGLE_DEG - angles)
+            + np.maximum(0.0, angles - MAX_QUAD_ANGLE_DEG)
+        )
+    ) * 0.65
+    side_penalty = max(0.0, side_ratio - MAX_QUAD_SIDE_RATIO) * 9.0
+    opposite_penalty = (
+        max(0.0, opposite_ratio_a - MAX_QUAD_OPPOSITE_SIDE_RATIO)
+        + max(0.0, opposite_ratio_b - MAX_QUAD_OPPOSITE_SIDE_RATIO)
+    ) * 7.0
     return angle_penalty + side_penalty + opposite_penalty
 
 
@@ -382,14 +406,26 @@ def is_valid_quad(quad: np.ndarray, width: int, height: int, min_area: float) ->
         return False
     if not is_convex_quad(quad):
         return False
+    bbox_w_fraction, bbox_h_fraction, bbox_area_fraction = quad_bbox_fraction(quad, width, height)
+    if bbox_area_fraction > MAX_QUAD_BBOX_AREA_RATIO:
+        return False
+    if (
+        bbox_w_fraction > MAX_QUAD_BBOX_SIDE_FRACTION
+        and bbox_h_fraction > MAX_QUAD_BBOX_SIDE_FRACTION
+    ):
+        return False
     lengths = edge_lengths(quad)
     min_edge = max(8.0, min(width, height) * 0.025)
     if float(np.min(lengths)) < min_edge:
         return False
-    if float(np.max(lengths) / max(np.min(lengths), 1e-6)) > 5.0:
+    if float(np.max(lengths) / max(np.min(lengths), 1e-6)) > MAX_QUAD_SIDE_RATIO:
+        return False
+    if float(max(lengths[0], lengths[2]) / max(min(lengths[0], lengths[2]), 1e-6)) > MAX_QUAD_OPPOSITE_SIDE_RATIO:
+        return False
+    if float(max(lengths[1], lengths[3]) / max(min(lengths[1], lengths[3]), 1e-6)) > MAX_QUAD_OPPOSITE_SIDE_RATIO:
         return False
     angles = interior_angles_deg(quad)
-    if float(np.min(angles)) < 35.0 or float(np.max(angles)) > 145.0:
+    if float(np.min(angles)) < MIN_QUAD_ANGLE_DEG or float(np.max(angles)) > MAX_QUAD_ANGLE_DEG:
         return False
     skinny = polygon_area(quad) / max(float(np.sum(lengths) ** 2), 1.0)
     if skinny < 0.012:
@@ -585,6 +621,159 @@ def intersect_lines(line1: np.ndarray, line2: np.ndarray) -> np.ndarray | None:
     x = (b1 * c2 - b2 * c1) / det
     y = (c1 * a2 - c2 * a1) / det
     return np.array([x, y], dtype=np.float32)
+
+
+def angle_delta_deg(angle_a: float, angle_b: float) -> float:
+    return abs(((angle_a - angle_b + 90.0) % 180.0) - 90.0)
+
+
+def point_line_distance(point: np.ndarray, line_abc: np.ndarray) -> float:
+    return abs(float(line_abc[0] * point[0] + line_abc[1] * point[1] + line_abc[2]))
+
+
+def line_segment_overlap_fraction(edge_start: np.ndarray, edge_end: np.ndarray, line: np.ndarray) -> float:
+    edge = edge_end - edge_start
+    edge_len = float(np.linalg.norm(edge))
+    if edge_len < 1e-6:
+        return 0.0
+    axis = edge / edge_len
+    line_pts = line.reshape(2, 2).astype(np.float32)
+    projections = (line_pts - edge_start) @ axis
+    overlap = max(0.0, min(edge_len, float(np.max(projections))) - max(0.0, float(np.min(projections))))
+    return overlap / edge_len
+
+
+def contour_side_line(quad: np.ndarray, edge_idx: int) -> np.ndarray | None:
+    p0 = quad[edge_idx]
+    p1 = quad[(edge_idx + 1) % 4]
+    return line_to_abc((p0[0], p0[1], p1[0], p1[1]))
+
+
+def best_hough_line_for_contour_side(
+    quad: np.ndarray,
+    edge_idx: int,
+    lines: np.ndarray,
+    *,
+    max_angle_delta: float,
+    max_distance: float,
+) -> np.ndarray | None:
+    p0 = quad[edge_idx]
+    p1 = quad[(edge_idx + 1) % 4]
+    edge_angle = math.degrees(math.atan2(float(p1[1] - p0[1]), float(p1[0] - p0[0]))) % 180.0
+    edge_mid = (p0 + p1) * 0.5
+
+    best_line = None
+    best_score = float("inf")
+    for line in lines.astype(np.float32):
+        line_abc = line_to_abc(line)
+        if line_abc is None:
+            continue
+        angle_delta = angle_delta_deg(edge_angle, line_angle_deg(line))
+        if angle_delta > max_angle_delta:
+            continue
+        distances = [
+            point_line_distance(p0, line_abc),
+            point_line_distance(p1, line_abc),
+            point_line_distance(edge_mid, line_abc),
+        ]
+        mean_distance = float(np.mean(distances))
+        if mean_distance > max_distance:
+            continue
+        overlap = line_segment_overlap_fraction(p0, p1, line)
+        if overlap < 0.20:
+            continue
+        score = mean_distance + angle_delta * 0.4 - overlap * 8.0
+        if score < best_score:
+            best_score = score
+            best_line = line_abc
+
+    return best_line
+
+
+def hough_lines_from_debug(debug_items: Sequence[LineDebug]) -> np.ndarray | None:
+    line_sets = []
+    for item in debug_items:
+        if item.family_a is not None:
+            line_sets.append(item.family_a)
+        if item.family_b is not None:
+            line_sets.append(item.family_b)
+    if not line_sets:
+        return None
+    return np.vstack(line_sets).astype(np.float32)
+
+
+def snap_contour_quad_to_hough_lines(
+    quad: np.ndarray,
+    lines: np.ndarray,
+    width: int,
+    height: int,
+    min_area: float,
+) -> np.ndarray | None:
+    quad = order_corners(quad)
+    max_distance = max(8.0, min(width, height) * 0.045)
+    side_lines: list[np.ndarray] = []
+    hough_supported_sides = 0
+
+    for edge_idx in range(4):
+        hough_line = best_hough_line_for_contour_side(
+            quad,
+            edge_idx,
+            lines,
+            max_angle_delta=16.0,
+            max_distance=max_distance,
+        )
+        if hough_line is not None:
+            side_lines.append(hough_line)
+            hough_supported_sides += 1
+            continue
+
+        contour_line = contour_side_line(quad, edge_idx)
+        if contour_line is None:
+            return None
+        side_lines.append(contour_line)
+
+    if hough_supported_sides < 3:
+        return None
+
+    points = [
+        intersect_lines(side_lines[0], side_lines[1]),
+        intersect_lines(side_lines[1], side_lines[2]),
+        intersect_lines(side_lines[2], side_lines[3]),
+        intersect_lines(side_lines[3], side_lines[0]),
+    ]
+    if any(point is None for point in points):
+        return None
+
+    snapped = order_corners(np.asarray(points, dtype=np.float32))
+    if not is_valid_quad(snapped, width, height, min_area):
+        return None
+    if quad_bbox_iou(quad, snapped) < 0.45:
+        return None
+    return snapped
+
+
+def find_contour_hough_hybrid_candidates(
+    contour_candidates: Sequence[Candidate],
+    debug_items: Sequence[LineDebug],
+    width: int,
+    height: int,
+    min_area: float,
+    variant_idx: int,
+) -> list[Candidate]:
+    lines = hough_lines_from_debug(debug_items)
+    if lines is None:
+        return []
+
+    quads = []
+    for candidate in contour_candidates:
+        snapped = snap_contour_quad_to_hough_lines(candidate.quad, lines, width, height, min_area)
+        if snapped is not None:
+            quads.append(snapped)
+
+    return [
+        Candidate(quad=quad, source="contour_hough_hybrid", variant_idx=variant_idx)
+        for quad in dedupe_candidates(quads)
+    ]
 
 
 def dominant_family_quads(
@@ -1052,8 +1241,13 @@ def refine_candidate(
         convex_penalty = 50.0 if not is_convex_quad(quad) else 0.0
         area_penalty = math.sqrt(max(min_area - area, 0.0))
         length_penalty = 20.0 if np.min(lengths) < 8.0 else 0.0
-        angle_penalty = float(np.sum(np.maximum(0.0, 35.0 - angles) + np.maximum(0.0, angles - 145.0)))
-        side_ratio_penalty = max(0.0, side_ratio - 5.0) * 10.0
+        angle_penalty = float(
+            np.sum(
+                np.maximum(0.0, MIN_QUAD_ANGLE_DEG - angles)
+                + np.maximum(0.0, angles - MAX_QUAD_ANGLE_DEG)
+            )
+        )
+        side_ratio_penalty = max(0.0, side_ratio - MAX_QUAD_SIDE_RATIO) * 10.0
         residual.extend([convex_penalty] * 12)
         residual.extend([area_penalty] * 12)
         residual.extend([length_penalty] * 8)
@@ -1135,10 +1329,25 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
                 artifacts.gray,
             )
         ]
-        hough_candidates, _ = hough_line_debug(artifacts.edges_canny, width, height, min_area, idx)
+        hough_candidates, hough_debug = hough_line_debug(artifacts.edges_canny, width, height, min_area, idx)
         closed_edges = fallback_edge_retry(artifacts)
-        closed_hough_candidates, _ = hough_line_debug(closed_edges, width, height, min_area, idx, closed_edges_used=True)
-        candidates = contour_candidates + hough_candidates + closed_hough_candidates
+        closed_hough_candidates, closed_hough_debug = hough_line_debug(
+            closed_edges,
+            width,
+            height,
+            min_area,
+            idx,
+            closed_edges_used=True,
+        )
+        hybrid_candidates = find_contour_hough_hybrid_candidates(
+            contour_candidates,
+            (hough_debug, closed_hough_debug),
+            width,
+            height,
+            min_area,
+            idx,
+        )
+        candidates = contour_candidates + hybrid_candidates + hough_candidates + closed_hough_candidates
 
         for candidate in candidates:
             candidate.score = edge_distance_score(candidate.quad, artifacts.dist, artifacts.grad_mag)
