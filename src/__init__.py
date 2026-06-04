@@ -6,12 +6,10 @@ from .modules import (
     ArucoDetectionModule,
     BaseModule,
     FrameRateLoggerModule,
-    GMMColorMaskModule,
     ImageEnhancementModule,
     MarkerRectificationModule,
     ModuleContext,
     ModuleOutput,
-    QueueFanoutModule,
 )
 from .video import LoopingVideoSource, VideoFrame, VideoSourceError
 from .processor import (
@@ -33,7 +31,6 @@ __all__ = [
     "configure_logging",
     "EmptyInputSource",
     "FrameRateLoggerModule",
-    "GMMColorMaskModule",
     "ImageEnhancementModule",
     "InputSource",
     "LoopingVideoSource",
@@ -43,7 +40,6 @@ __all__ = [
     "ModuleOutput",
     "ProcessorLoop",
     "ProcessorError",
-    "QueueFanoutModule",
     "RoutedMessage",
     "SignalStopper",
     "UnknownQueueError",

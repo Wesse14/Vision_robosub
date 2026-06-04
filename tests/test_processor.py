@@ -6,7 +6,6 @@ import os
 import signal
 from pathlib import Path
 
-import joblib
 import numpy as np
 import cv2
 import pytest
@@ -43,13 +42,11 @@ from src import (
     DuplicateQueueError,
     FrameRateLoggerModule,
     ImageEnhancementModule,
-    GMMColorMaskModule,
     MarkerRectificationModule,
     LoopingVideoSource,
     Message,
     ModuleContext,
     ProcessorLoop,
-    QueueFanoutModule,
     RoutedMessage,
     SignalStopper,
     UnknownQueueError,
@@ -58,33 +55,6 @@ from src import (
 
 
 TEST_VIDEO_PATH = Path(__file__).parents[1] / "data" / "1-input.mp4"
-
-
-class DistanceGMM:
-    def __init__(self, center: np.ndarray) -> None:
-        self.center = center.astype(np.float64)
-
-    def score_samples(self, pixels: np.ndarray) -> np.ndarray:
-        delta = pixels.astype(np.float64) - self.center
-        return -np.sum(delta * delta, axis=1) / 100.0
-
-
-def write_synthetic_gmm_model(path: Path, query_bgr: tuple[int, int, int]) -> None:
-    query_pixel = np.array([[query_bgr]], dtype=np.uint8)
-    query_lab = cv2.cvtColor(query_pixel, cv2.COLOR_BGR2LAB).reshape(3)
-    non_query_lab = cv2.cvtColor(
-        np.array([[[255, 0, 0]]], dtype=np.uint8),
-        cv2.COLOR_BGR2LAB,
-    ).reshape(3)
-    joblib.dump(
-        {
-            "query_gmm": DistanceGMM(query_lab),
-            "non_query_gmm": DistanceGMM(non_query_lab),
-            "query_prior": 0.5,
-            "non_query_prior": 0.5,
-        },
-        path,
-    )
 
 
 class UppercaseModule(BaseModule[str]):
@@ -348,6 +318,9 @@ def test_color_formatter_can_disable_colors() -> None:
 
 
 def test_looping_video_source_reads_and_loops_test_video() -> None:
+    if not TEST_VIDEO_PATH.exists():
+        pytest.skip(f"test video not found: {TEST_VIDEO_PATH}")
+
     async def scenario() -> None:
         source = LoopingVideoSource(TEST_VIDEO_PATH, realtime=False)
         try:
@@ -478,114 +451,6 @@ def test_image_enhancement_module_routes_output_to_configured_queue() -> None:
         await processor.stop()
 
     asyncio.run(scenario())
-
-
-def test_queue_fanout_module_routes_message_to_all_output_queues() -> None:
-    async def scenario() -> None:
-        module = QueueFanoutModule(
-            name="fanout",
-            input_queue="in",
-            output_queues=["out_a", "out_b"],
-        )
-        message = Message("payload", metadata={"source": "test"})
-
-        routed = await module.process(message, AsyncProcessor())
-
-        assert [item.destination for item in routed] == ["out_a", "out_b"]
-        assert all(item.message is message for item in routed)
-
-    asyncio.run(scenario())
-
-
-def test_gmm_color_mask_module_outputs_binary_mask(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        query_bgr = (10, 200, 20)
-        model_path = tmp_path / "color_classifier_gmm.joblib"
-        write_synthetic_gmm_model(model_path, query_bgr)
-        image = np.full((20, 24, 3), query_bgr, dtype=np.uint8)
-        module = GMMColorMaskModule(
-            name="gmm",
-            input_queue="frames",
-            output_queue="masks",
-            model_path=model_path,
-        )
-
-        routed = await module.process(Message(image), AsyncProcessor())
-
-        assert routed.destination == "masks"
-        assert routed.message.payload.shape == (20, 24)
-        assert routed.message.payload.dtype == np.uint8
-        assert set(np.unique(routed.message.payload)).issubset({0, 255})
-        assert np.any(routed.message.payload == 255)
-
-    asyncio.run(scenario())
-
-
-def test_gmm_color_mask_module_writes_debug_mask_when_enabled(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        query_bgr = (10, 200, 20)
-        model_path = tmp_path / "color_classifier_gmm.joblib"
-        debug_dir = tmp_path / "debug"
-        write_synthetic_gmm_model(model_path, query_bgr)
-        image = np.full((20, 24, 3), query_bgr, dtype=np.uint8)
-        module = GMMColorMaskModule(
-            name="gmm",
-            input_queue="frames",
-            output_queue="masks",
-            model_path=model_path,
-            debug=True,
-            debug_dir=debug_dir,
-        )
-
-        routed = await module.process(Message(image), AsyncProcessor())
-
-        debug_mask_path = debug_dir / "gmm_color_mask.png"
-        assert debug_mask_path.exists()
-        debug_mask = cv2.imread(str(debug_mask_path), cv2.IMREAD_GRAYSCALE)
-        assert debug_mask is not None
-        assert debug_mask.shape == routed.message.payload.shape
-        assert debug_mask.dtype == np.uint8
-
-    asyncio.run(scenario())
-
-
-def test_gmm_color_mask_module_preserves_video_frame_metadata(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        query_bgr = (10, 200, 20)
-        model_path = tmp_path / "color_classifier_gmm.joblib"
-        write_synthetic_gmm_model(model_path, query_bgr)
-        frame = VideoFrame(
-            image=np.full((12, 14, 3), query_bgr, dtype=np.uint8),
-            frame_index=42,
-            timestamp_seconds=1.68,
-            loop_count=3,
-        )
-        module = GMMColorMaskModule(
-            name="gmm",
-            input_queue="frames",
-            output_queue="masks",
-            model_path=model_path,
-        )
-
-        routed = await module.process(Message(frame, metadata={"source": "test"}), AsyncProcessor())
-
-        assert routed.message.payload.shape == (12, 14)
-        assert routed.message.metadata["source"] == "test"
-        assert routed.message.metadata["frame_index"] == 42
-        assert routed.message.metadata["timestamp_seconds"] == 1.68
-        assert routed.message.metadata["loop_count"] == 3
-
-    asyncio.run(scenario())
-
-
-def test_gmm_color_mask_module_missing_model_raises(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="GMM color classifier model not found"):
-        GMMColorMaskModule(
-            name="gmm",
-            input_queue="frames",
-            output_queue="masks",
-            model_path=tmp_path / "missing.joblib",
-        )
 
 
 def make_synthetic_marker_image() -> np.ndarray:
@@ -724,6 +589,40 @@ def test_marker_quad_summary_can_include_navigation_signal_without_debug(tmp_pat
     assert output is not None
     assert np.any(output[:, :, 1] > output[:, :, 2] + 40)
     assert np.any(output[:40, :, :] < 80)
+
+
+def test_combined_navigation_score_requires_matching_mask_and_grid_ids() -> None:
+    assert image_batch.combined_navigation_score(63, 0.91, 63, 0.97) == pytest.approx(0.91)
+    assert image_batch.combined_navigation_score(63, 0.99, 42, 0.99) == 0.0
+    assert image_batch.combined_navigation_score(None, 0.99, 42, 0.99) == 0.0
+
+
+def test_navigation_summary_text_includes_signal_score_and_ids() -> None:
+    text = image_batch.navigation_summary_text(
+        [
+            image_batch.NavigationSummary(
+                image="foto_00218.jpg",
+                signal="NEXT",
+                combined_score=0.952,
+                elapsed_ms=123.4,
+                marker_id=63,
+                aruco_ids=(63,),
+                mask_match_id=63,
+                mask_match_score=0.952,
+                grid_match_id=63,
+                grid_match_score=0.981,
+                reason="strong mask and grid agreement",
+            )
+        ]
+    )
+
+    assert text.splitlines()[0].startswith("image\tsignal\tcombined_score\telapsed_ms")
+    assert "foto_00218.jpg\tNEXT\t0.952\t123.4\t63\t63\t63\t0.952\t63\t0.981\tstrong mask and grid agreement" in text
+
+
+def test_full_pipeline_suppresses_visual_results_but_aruco_keeps_them() -> None:
+    assert image_batch.writes_visual_results("full") is False
+    assert image_batch.writes_visual_results("aruco") is True
 
 
 def test_marker_quad_refinement_moves_to_inner_black_marker() -> None:
@@ -940,6 +839,31 @@ def test_marker_navigation_signal_requires_strong_mask_grid_agreement_without_ar
     assert strong_marker_id == 63
 
 
+def test_aruco_detection_uses_mask_grid_fast_path_before_opencv(monkeypatch: pytest.MonkeyPatch) -> None:
+    mask_candidate = np.zeros((160, 160), dtype=np.uint8)
+    grid_candidate = np.zeros((7, 7), dtype=np.uint8)
+
+    def fail_opencv_detection(image: np.ndarray) -> tuple[object, object]:
+        raise AssertionError("OpenCV ArUco detection should not run on strong mask/grid agreement")
+
+    def strong_mask_match(image: np.ndarray, template_dir: Path) -> MaskMatch:
+        return MaskMatch(63, 0.90, 0, mask_candidate, mask_candidate, str(template_dir))
+
+    def strong_grid_match(image: np.ndarray, template_dir: Path) -> MaskMatch:
+        return MaskMatch(63, 0.96, 0, grid_candidate, grid_candidate, str(template_dir))
+
+    monkeypatch.setattr(aruco_detector, "_detect_on_image", fail_opencv_detection)
+    monkeypatch.setattr(aruco_detector, "match_aruco_mask", strong_mask_match)
+    monkeypatch.setattr(aruco_detector, "match_aruco_grid", strong_grid_match)
+
+    detection = aruco_detector.detect_original_aruco_markers(np.full((128, 128, 3), 180, dtype=np.uint8))
+
+    assert detection.navigation_signal == "NEXT"
+    assert detection.navigation_marker_id == 63
+    assert detection.confidence == "mask_grid"
+    assert detection.ids == ()
+
+
 def test_marker_rectification_debug_disabled_does_not_create_debug_files(tmp_path: Path) -> None:
     async def scenario() -> None:
         debug_dir = tmp_path / "debug"
@@ -1007,7 +931,7 @@ def test_marker_rectification_debug_enabled_writes_failure_images(tmp_path: Path
     asyncio.run(scenario())
 
 
-def test_main_uses_direct_marker_path_when_gmm_model_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_main_uses_direct_marker_path(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     class SpyMarkerRectificationModule(BaseModule[np.ndarray]):
@@ -1037,98 +961,19 @@ def test_main_uses_direct_marker_path_when_gmm_model_missing(monkeypatch: pytest
         async def run_until_interrupted(self) -> None:
             return None
 
-    missing_model_path = tmp_path / "missing.joblib"
-    monkeypatch.setattr(app_main, "GMM_MODEL_PATH", missing_model_path)
+    class NoopVideoSource:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
     monkeypatch.setattr(app_main, "MarkerRectificationModule", SpyMarkerRectificationModule)
     monkeypatch.setattr(app_main, "ProcessorLoop", NoopProcessorLoop)
+    monkeypatch.setattr(app_main, "LoopingVideoSource", NoopVideoSource)
     args = app_main.parse_args(["--video-path", str(TEST_VIDEO_PATH)])
 
     asyncio.run(app_main.run_app(args))
 
     assert captured["marker_input_queue"] == app_main.ENHANCED_FRAME_QUEUE
     assert captured["marker_output_queue"] == app_main.MARKER_CUTOUT_QUEUE
-
-
-def test_main_registers_gmm_fanout_path_when_model_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    captured: dict[str, object] = {}
-
-    class SpyMarkerRectificationModule(BaseModule[np.ndarray]):
-        def __init__(
-            self,
-            name: str,
-            input_queue: str,
-            output_queue: str,
-            **kwargs: object,
-        ) -> None:
-            super().__init__(name, input_queue)
-            captured["marker_input_queue"] = input_queue
-            captured["marker_output_queue"] = output_queue
-
-        async def process(
-            self,
-            message: Message[np.ndarray],
-            context: ModuleContext,
-        ) -> None:
-            return None
-
-    class SpyGMMColorMaskModule(BaseModule[np.ndarray]):
-        def __init__(
-            self,
-            name: str,
-            input_queue: str,
-            output_queue: str,
-            **kwargs: object,
-        ) -> None:
-            super().__init__(name, input_queue)
-            captured["gmm_input_queue"] = input_queue
-            captured["gmm_output_queue"] = output_queue
-            captured["gmm_kwargs"] = kwargs
-
-        async def process(
-            self,
-            message: Message[np.ndarray],
-            context: ModuleContext,
-        ) -> None:
-            return None
-
-    class SpyQueueFanoutModule(BaseModule[np.ndarray]):
-        def __init__(self, name: str, input_queue: str, output_queues: list[str]) -> None:
-            super().__init__(name, input_queue)
-            captured["fanout_input_queue"] = input_queue
-            captured["fanout_output_queues"] = output_queues
-
-        async def process(
-            self,
-            message: Message[np.ndarray],
-            context: ModuleContext,
-        ) -> None:
-            return None
-
-    class NoopProcessorLoop:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
-
-        async def run_until_interrupted(self) -> None:
-            return None
-
-    model_path = tmp_path / "color_classifier_gmm.joblib"
-    model_path.write_bytes(b"exists")
-    monkeypatch.setattr(app_main, "GMM_MODEL_PATH", model_path)
-    monkeypatch.setattr(app_main, "MarkerRectificationModule", SpyMarkerRectificationModule)
-    monkeypatch.setattr(app_main, "GMMColorMaskModule", SpyGMMColorMaskModule)
-    monkeypatch.setattr(app_main, "QueueFanoutModule", SpyQueueFanoutModule)
-    monkeypatch.setattr(app_main, "ProcessorLoop", NoopProcessorLoop)
-    args = app_main.parse_args(["--video-path", str(TEST_VIDEO_PATH)])
-
-    asyncio.run(app_main.run_app(args))
-
-    assert captured["fanout_input_queue"] == app_main.ENHANCED_FRAME_QUEUE
-    assert captured["fanout_output_queues"] == [app_main.MARKER_FRAME_QUEUE, app_main.GMM_FRAME_QUEUE]
-    assert captured["marker_input_queue"] == app_main.MARKER_FRAME_QUEUE
-    assert captured["marker_output_queue"] == app_main.MARKER_CUTOUT_QUEUE
-    assert captured["gmm_input_queue"] == app_main.GMM_FRAME_QUEUE
-    assert captured["gmm_output_queue"] == app_main.COLOR_MASK_QUEUE
-    assert captured["gmm_kwargs"] == {"model_path": model_path, "debug": False, "debug_dir": Path("data/debug")}
 
 
 def test_main_debug_flag_is_parsed_and_wired_to_marker_rectifier(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1160,8 +1005,13 @@ def test_main_debug_flag_is_parsed_and_wired_to_marker_rectifier(monkeypatch: py
         async def run_until_interrupted(self) -> None:
             return None
 
+    class NoopVideoSource:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
     monkeypatch.setattr(app_main, "MarkerRectificationModule", SpyMarkerRectificationModule)
     monkeypatch.setattr(app_main, "ProcessorLoop", NoopProcessorLoop)
+    monkeypatch.setattr(app_main, "LoopingVideoSource", NoopVideoSource)
     args = app_main.parse_args(["--debug", "--video-path", str(TEST_VIDEO_PATH)])
 
     assert args.debug is True

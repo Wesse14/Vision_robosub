@@ -5,6 +5,8 @@ import asyncio
 import logging
 import random
 import shutil
+import time
+from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
@@ -15,7 +17,6 @@ import numpy as np
 from src import (
     AsyncProcessor,
     ArucoDetectionModule,
-    GMMColorMaskModule,
     ImageEnhancementModule,
     MarkerRectificationModule,
     Message,
@@ -29,12 +30,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_INPUT_DIR = Path("data/test_images")
 DEFAULT_OUTPUT_DIR = Path("data/test_results")
 DEFAULT_VIDEO_DIR = Path("data/test_videos")
-DEFAULT_GMM_MODEL_PATH = Path("data/color_classifier_gmm.joblib")
 SUPPORTED_EXTENSIONS = {".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 SUPPORTED_VIDEO_EXTENSIONS = {".avi", ".m4v", ".mov", ".mp4", ".mpeg", ".mpg"}
-PIPELINES = ("enhance", "marker", "aruco", "gmm", "full")
+PIPELINES = ("enhance", "marker", "aruco", "full")
 GENERATED_FRAME_PREFIX = "video_frame__"
 QUAD_SUMMARY_DIR_NAME = "_marker_detected_quads"
+NAVIGATION_SUMMARY_FILENAME = "navigation_signals.txt"
+
+
+@dataclass(frozen=True, slots=True)
+class NavigationSummary:
+    image: str
+    signal: str
+    combined_score: float
+    elapsed_ms: float
+    marker_id: int | None
+    aruco_ids: tuple[int, ...]
+    mask_match_id: int | None
+    mask_match_score: float
+    grid_match_id: int | None
+    grid_match_score: float
+    reason: str
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -72,12 +88,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Which module path to run for every input image.",
     )
     parser.add_argument(
-        "--gmm-model-path",
-        default=DEFAULT_GMM_MODEL_PATH,
-        type=Path,
-        help="Path to the GMM color classifier model.",
-    )
-    parser.add_argument(
         "--debug",
         action="store_true",
         help="Write module debug images under the output directory.",
@@ -93,8 +103,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Retry marker detection after repainting yellow/blue suppression-mask pixels red.",
     )
     parser.add_argument(
+        "--max-image-seconds",
+        default=1.5,
+        type=float,
+        help="Skip an image once processing exceeds this many seconds. Use 0 to disable.",
+    )
+    parser.add_argument(
         "--log-level",
-        default="INFO",
+        default="ERROR",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Minimum log level to show.",
     )
@@ -225,6 +241,111 @@ def write_image(path: Path, image: np.ndarray) -> None:
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def combined_navigation_score(
+    mask_match_id: int | None,
+    mask_match_score: float,
+    grid_match_id: int | None,
+    grid_match_score: float,
+) -> float:
+    if mask_match_id is None or mask_match_id != grid_match_id:
+        return 0.0
+    return min(mask_match_score, grid_match_score)
+
+
+def format_optional_int(value: int | None) -> str:
+    return "" if value is None else str(value)
+
+
+def format_ids(ids: tuple[int, ...]) -> str:
+    return ",".join(str(marker_id) for marker_id in ids)
+
+
+def navigation_summary_text(summaries: Sequence[NavigationSummary]) -> str:
+    rows = [
+        "\t".join(
+            [
+                "image",
+                "signal",
+                "combined_score",
+                "elapsed_ms",
+                "marker_id",
+                "aruco_ids",
+                "mask_match_id",
+                "mask_match_score",
+                "grid_match_id",
+                "grid_match_score",
+                "reason",
+            ]
+        )
+    ]
+    for summary in summaries:
+        rows.append(
+            "\t".join(
+                [
+                    summary.image,
+                    summary.signal,
+                    f"{summary.combined_score:.3f}",
+                    f"{summary.elapsed_ms:.1f}",
+                    format_optional_int(summary.marker_id),
+                    format_ids(summary.aruco_ids),
+                    format_optional_int(summary.mask_match_id),
+                    f"{summary.mask_match_score:.3f}",
+                    format_optional_int(summary.grid_match_id),
+                    f"{summary.grid_match_score:.3f}",
+                    summary.reason,
+                ]
+            )
+        )
+    return "\n".join(rows) + "\n"
+
+
+def write_navigation_summary(output_dir: Path, summaries: Sequence[NavigationSummary]) -> None:
+    if summaries:
+        write_text(output_dir / NAVIGATION_SUMMARY_FILENAME, navigation_summary_text(summaries))
+
+
+def image_time_limit_seconds(args: argparse.Namespace) -> float | None:
+    limit = float(args.max_image_seconds)
+    return limit if limit > 0 else None
+
+
+def image_timed_out(started_at: float, args: argparse.Namespace) -> bool:
+    limit = image_time_limit_seconds(args)
+    return limit is not None and (time.perf_counter() - started_at) >= limit
+
+
+def image_remaining_seconds(started_at: float, args: argparse.Namespace) -> float | None:
+    limit = image_time_limit_seconds(args)
+    if limit is None:
+        return None
+    return max(0.001, limit - (time.perf_counter() - started_at))
+
+
+def timeout_navigation_summary(
+    path: Path,
+    started_at: float,
+    reason: str = "image processing exceeded the configured time limit",
+) -> NavigationSummary:
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    return NavigationSummary(
+        image=path.name,
+        signal="SKIPPED_TIMEOUT",
+        combined_score=0.0,
+        elapsed_ms=elapsed_ms,
+        marker_id=None,
+        aruco_ids=(),
+        mask_match_id=None,
+        mask_match_score=0.0,
+        grid_match_id=None,
+        grid_match_score=0.0,
+        reason=reason,
+    )
+
+
+def writes_visual_results(pipeline: str) -> bool:
+    return pipeline != "full"
 
 
 def draw_summary_label(image: np.ndarray, label: str) -> np.ndarray:
@@ -388,14 +509,16 @@ def clear_output_dir(output_dir: Path) -> None:
             path.unlink()
 
 
-async def run_image(path: Path, args: argparse.Namespace) -> None:
+async def run_image(path: Path, args: argparse.Namespace) -> NavigationSummary | None:
     image = read_image(path)
     if image is None:
-        return
+        return None
+    started_at = time.perf_counter()
 
     stem = path.stem
     output_dir = args.output_dir / stem
     debug_dir = output_dir / "debug"
+    write_visual_results = writes_visual_results(args.pipeline)
     context = AsyncProcessor()
     frame = VideoFrame(
         image=image,
@@ -406,7 +529,7 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
     message = Message(frame, metadata={"source_path": str(path)})
     original_message = message
 
-    if args.pipeline in {"enhance", "full"}:
+    if args.pipeline in {"enhance", "aruco", "full"}:
         enhancer = ImageEnhancementModule(
             name="image-enhancer",
             input_queue="frames",
@@ -414,12 +537,14 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
         )
         enhanced = await enhancer.process(message, context)
         message = enhanced.message
-        write_image(output_dir / "01_enhanced.png", message.payload.image)
+        if write_visual_results:
+            write_image(output_dir / "01_enhanced.png", message.payload.image)
 
     marker_image = None
     marker_message = None
     marker_input_image = None
     navigation_label = None
+    navigation_summary = None
     if args.pipeline in {"marker", "aruco", "full"}:
         marker_input_image = payload_image(message.payload).copy()
         marker = MarkerRectificationModule(
@@ -429,26 +554,37 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             debug=args.debug,
             debug_dir=debug_dir / "marker",
             experimental_color_repaint_retry=args.experimental_color_repaint_retry,
+            max_processing_seconds=image_remaining_seconds(started_at, args),
         )
         marker_result = await marker.process(message, context)
         if marker_result is None:
-            for retry_message in marker_retry_messages(original_message, message):
-                attempt = retry_message.metadata["marker_preprocess_attempt"]
-                logger.info("Retrying marker detection for %s with %s preprocessing", path, attempt)
-                retry_input_image = payload_image(retry_message.payload).copy()
-                marker = MarkerRectificationModule(
-                    name=f"marker-rectifier-{attempt}",
-                    input_queue="frames",
-                    output_queue="marker_cutouts",
-                    debug=args.debug,
-                    debug_dir=debug_dir / "marker",
-                    experimental_color_repaint_retry=args.experimental_color_repaint_retry,
+            if image_timed_out(started_at, args):
+                return timeout_navigation_summary(path, started_at)
+            if image_time_limit_seconds(args) is not None:
+                return timeout_navigation_summary(
+                    path,
+                    started_at,
+                    "marker fallback skipped to stay under the configured time limit",
                 )
-                marker_result = await marker.process(retry_message, context)
-                if marker_result is not None:
-                    marker_input_image = retry_input_image
-                    logger.info("Marker detected in %s after %s preprocessing", path, attempt)
-                    break
+            if image_time_limit_seconds(args) is None:
+                for retry_message in marker_retry_messages(original_message, message):
+                    attempt = retry_message.metadata["marker_preprocess_attempt"]
+                    logger.info("Retrying marker detection for %s with %s preprocessing", path, attempt)
+                    retry_input_image = payload_image(retry_message.payload).copy()
+                    marker = MarkerRectificationModule(
+                        name=f"marker-rectifier-{attempt}",
+                        input_queue="frames",
+                        output_queue="marker_cutouts",
+                        debug=args.debug,
+                        debug_dir=debug_dir / "marker",
+                        experimental_color_repaint_retry=args.experimental_color_repaint_retry,
+                        max_processing_seconds=None,
+                    )
+                    marker_result = await marker.process(retry_message, context)
+                    if marker_result is not None:
+                        marker_input_image = retry_input_image
+                        logger.info("Marker detected in %s after %s preprocessing", path, attempt)
+                        break
             if marker_result is None:
                 logger.warning("No marker detected in %s", path)
 
@@ -459,10 +595,11 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
                 if isinstance(marker_payload, VideoFrame)
                 else marker_payload
             )
-            write_image(output_dir / "02_marker_cutout.png", marker_image)
+            if write_visual_results:
+                write_image(output_dir / "02_marker_cutout.png", marker_image)
             marker_message = marker_result.message
             attempt = marker_message.metadata.get("marker_preprocess_attempt", "initial")
-            if attempt != "initial":
+            if write_visual_results and attempt != "initial":
                 write_image(output_dir / f"02_marker_cutout_{attempt}.png", marker_image)
 
     if args.pipeline in {"aruco", "full"} and marker_image is not None and marker_message is not None:
@@ -474,47 +611,70 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             debug_dir=debug_dir / "aruco",
         )
         aruco_result = await aruco.process(marker_message, context)
+        if image_timed_out(started_at, args):
+            return timeout_navigation_summary(path, started_at)
         aruco_detection = aruco_result.message.payload
+        combined_score = combined_navigation_score(
+            aruco_detection.mask_match_id,
+            aruco_detection.mask_match_score,
+            aruco_detection.grid_match_id,
+            aruco_detection.grid_match_score,
+        )
+        navigation_summary = NavigationSummary(
+            image=path.name,
+            signal=aruco_detection.navigation_signal,
+            combined_score=combined_score,
+            elapsed_ms=0.0,
+            marker_id=aruco_detection.navigation_marker_id,
+            aruco_ids=aruco_detection.ids,
+            mask_match_id=aruco_detection.mask_match_id,
+            mask_match_score=aruco_detection.mask_match_score,
+            grid_match_id=aruco_detection.grid_match_id,
+            grid_match_score=aruco_detection.grid_match_score,
+            reason=aruco_detection.navigation_reason,
+        )
         navigation_label = marker_summary_label(
             aruco_detection.navigation_signal,
             aruco_detection.navigation_marker_id,
         )
-        write_image(
-            output_dir / "03_aruco_detected.png",
-            aruco_detection.annotated_image,
-        )
-        write_image(
-            output_dir / "04_aruco_high_contrast_retry.png",
-            aruco_detection.high_contrast_annotated_image,
-        )
-        write_image(
-            output_dir / "05_aruco_mask_match.png",
-            aruco_detection.mask_match_image,
-        )
-        write_image(
-            output_dir / "06_aruco_grid.png",
-            aruco_detection.grid_image,
-        )
-        write_image(
-            output_dir / "07_aruco_grid_match.png",
-            aruco_detection.grid_match_image,
-        )
-        write_text(
-            output_dir / "09_navigation_signal.txt",
-            "\n".join(
-                [
-                    f"signal={aruco_detection.navigation_signal}",
-                    f"marker_id={aruco_detection.navigation_marker_id}",
-                    f"reason={aruco_detection.navigation_reason}",
-                    f"aruco_ids={aruco_detection.ids}",
-                    f"mask_match_id={aruco_detection.mask_match_id}",
-                    f"mask_match_score={aruco_detection.mask_match_score:.3f}",
-                    f"grid_match_id={aruco_detection.grid_match_id}",
-                    f"grid_match_score={aruco_detection.grid_match_score:.3f}",
-                ]
+        if write_visual_results:
+            write_image(
+                output_dir / "03_aruco_detected.png",
+                aruco_detection.annotated_image,
             )
-            + "\n",
-        )
+            write_image(
+                output_dir / "04_aruco_high_contrast_retry.png",
+                aruco_detection.high_contrast_annotated_image,
+            )
+            write_image(
+                output_dir / "05_aruco_mask_match.png",
+                aruco_detection.mask_match_image,
+            )
+            write_image(
+                output_dir / "06_aruco_grid.png",
+                aruco_detection.grid_image,
+            )
+            write_image(
+                output_dir / "07_aruco_grid_match.png",
+                aruco_detection.grid_match_image,
+            )
+            write_text(
+                output_dir / "09_navigation_signal.txt",
+                "\n".join(
+                    [
+                        f"signal={aruco_detection.navigation_signal}",
+                        f"marker_id={aruco_detection.navigation_marker_id}",
+                        f"reason={aruco_detection.navigation_reason}",
+                        f"aruco_ids={aruco_detection.ids}",
+                        f"combined_score={combined_score:.3f}",
+                        f"mask_match_id={aruco_detection.mask_match_id}",
+                        f"mask_match_score={aruco_detection.mask_match_score:.3f}",
+                        f"grid_match_id={aruco_detection.grid_match_id}",
+                        f"grid_match_score={aruco_detection.grid_match_score:.3f}",
+                    ]
+                )
+                + "\n",
+            )
 
     if marker_message is not None and (args.debug or args.save_marker_quads):
         save_marker_detected_quad_summary(
@@ -526,26 +686,25 @@ async def run_image(path: Path, args: argparse.Namespace) -> None:
             navigation_label,
         )
 
-    if args.pipeline in {"gmm", "full"}:
-        if not args.gmm_model_path.exists():
-            logger.warning(
-                "Skipping GMM for %s; model not found at %s",
-                path,
-                args.gmm_model_path,
-            )
-        else:
-            gmm = GMMColorMaskModule(
-                name="gmm-color-mask",
-                input_queue="frames",
-                output_queue="color_masks",
-                model_path=args.gmm_model_path,
-                debug=args.debug,
-                debug_dir=debug_dir / "gmm",
-            )
-            gmm_result = await gmm.process(message, context)
-            write_image(output_dir / "08_color_mask.png", gmm_result.message.payload)
-
-    logger.info("Processed %s -> %s", path, output_dir)
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    logger.info("Processed %s -> %s in %.1f ms", path, output_dir, elapsed_ms)
+    if navigation_summary is not None:
+        navigation_summary = replace(navigation_summary, elapsed_ms=elapsed_ms)
+    if navigation_summary is None and args.pipeline in {"aruco", "full"}:
+        return NavigationSummary(
+            image=path.name,
+            signal="NO_MARKER",
+            combined_score=0.0,
+            elapsed_ms=elapsed_ms,
+            marker_id=None,
+            aruco_ids=(),
+            mask_match_id=None,
+            mask_match_score=0.0,
+            grid_match_id=None,
+            grid_match_score=0.0,
+            reason="marker rectification did not produce a cutout",
+        )
+    return navigation_summary
 
 
 async def run_batch(args: argparse.Namespace) -> None:
@@ -556,8 +715,13 @@ async def run_batch(args: argparse.Namespace) -> None:
         logger.warning("No test images found in %s", args.input_dir)
         return
 
+    summaries: list[NavigationSummary] = []
     for path in image_paths:
-        await run_image(path, args)
+        summary = await run_image(path, args)
+        if summary is not None:
+            summaries.append(summary)
+
+    write_navigation_summary(args.output_dir, summaries)
 
 
 def main() -> None:

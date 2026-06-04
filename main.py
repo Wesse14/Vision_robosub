@@ -10,12 +10,10 @@ from src import (
     ArucoDetectionModule,
     AsyncProcessor,
     FrameRateLoggerModule,
-    GMMColorMaskModule,
     ImageEnhancementModule,
     LoopingVideoSource,
     MarkerRectificationModule,
     ProcessorLoop,
-    QueueFanoutModule,
     configure_logging,
 )
 
@@ -28,10 +26,6 @@ FRAME_QUEUE = "frames"
 ENHANCED_FRAME_QUEUE = "enhanced_frames"
 MARKER_CUTOUT_QUEUE = "marker_cutouts"
 ARUCO_DETECTION_QUEUE = "aruco_detections"
-GMM_MODEL_PATH = Path("data/color_classifier_gmm.joblib")
-GMM_FRAME_QUEUE = "gmm_frames"
-MARKER_FRAME_QUEUE = "marker_frames"
-COLOR_MASK_QUEUE = "color_masks"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -74,17 +68,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 async def run_app(args: argparse.Namespace) -> None:
     processor = AsyncProcessor()
-    gmm_model_exists = GMM_MODEL_PATH.exists()
-    marker_input_queue = MARKER_FRAME_QUEUE if gmm_model_exists else ENHANCED_FRAME_QUEUE
 
     processor.create_queue(FRAME_QUEUE, maxsize=args.queue_size)
     processor.create_queue(ENHANCED_FRAME_QUEUE, maxsize=args.queue_size)
     processor.create_queue(MARKER_CUTOUT_QUEUE, maxsize=args.queue_size)
     processor.create_queue(ARUCO_DETECTION_QUEUE, maxsize=args.queue_size)
-    if gmm_model_exists:
-        processor.create_queue(MARKER_FRAME_QUEUE, maxsize=args.queue_size)
-        processor.create_queue(GMM_FRAME_QUEUE, maxsize=args.queue_size)
-        processor.create_queue(COLOR_MASK_QUEUE)
 
     processor.register_module(
         ImageEnhancementModule(
@@ -93,32 +81,11 @@ async def run_app(args: argparse.Namespace) -> None:
             output_queue=ENHANCED_FRAME_QUEUE,
         )
     )
-    if gmm_model_exists:
-        processor.register_module(
-            QueueFanoutModule(
-                name="enhanced-frame-fanout",
-                input_queue=ENHANCED_FRAME_QUEUE,
-                output_queues=[MARKER_FRAME_QUEUE, GMM_FRAME_QUEUE],
-            )
-        )
-        processor.register_module(
-            GMMColorMaskModule(
-                name="gmm-color-mask",
-                input_queue=GMM_FRAME_QUEUE,
-                output_queue=COLOR_MASK_QUEUE,
-                model_path=GMM_MODEL_PATH,
-                debug=args.debug,
-                debug_dir=Path("data/debug"),
-            )
-        )
-        logger.info("GMM color mask module enabled with model %s", GMM_MODEL_PATH)
-    else:
-        logger.info("GMM color classifier model not found at %s; module disabled", GMM_MODEL_PATH)
 
     processor.register_module(
         MarkerRectificationModule(
             name="marker-rectifier",
-            input_queue=marker_input_queue,
+            input_queue=ENHANCED_FRAME_QUEUE,
             output_queue=MARKER_CUTOUT_QUEUE,
             debug=args.debug,
             debug_dir=Path("data/debug"),

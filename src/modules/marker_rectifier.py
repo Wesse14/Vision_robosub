@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -24,6 +26,16 @@ MIN_QUAD_ANGLE_DEG = 50.0
 MAX_QUAD_ANGLE_DEG = 130.0
 MAX_QUAD_BBOX_AREA_RATIO = 0.82
 MAX_QUAD_BBOX_SIDE_FRACTION = 0.92
+
+
+class MarkerProcessingTimeout(RuntimeError):
+    pass
+
+
+def check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise MarkerProcessingTimeout("marker processing exceeded the image time limit")
+
 
 @dataclass
 class EdgeArtifacts:
@@ -157,21 +169,39 @@ def detect_edges(
     )
 
 
-def build_edge_variants(image: np.ndarray, preprocess_mode: EnhancementMode = None) -> tuple[np.ndarray, list[EdgeArtifacts]]:
+def build_edge_variants(
+    image: np.ndarray,
+    preprocess_mode: EnhancementMode = None,
+    deadline: float | None = None,
+) -> tuple[np.ndarray, list[EdgeArtifacts]]:
     working_image = apply_enhancement(image, preprocess_mode) if preprocess_mode is not None else image
     gray = cv2.cvtColor(working_image, cv2.COLOR_BGR2GRAY)
     suppression_mask = color_suppression_mask(working_image)
     gray_without_suppressed_colors = suppress_masked_edges(gray, suppression_mask)
     high_contrast = high_contrast_marker_gray(working_image)
     high_contrast_without_suppressed_colors = suppress_masked_edges(high_contrast, suppression_mask)
-    variants = [
-        detect_edges(high_contrast_without_suppressed_colors, low_scale=0.35, high_scale=0.9, ignore_mask=suppression_mask),
-        detect_edges(high_contrast_without_suppressed_colors, low_scale=0.5, high_scale=1.1, ignore_mask=suppression_mask),
-        detect_edges(gray_without_suppressed_colors, ignore_mask=suppression_mask),
-        detect_edges(gray_without_suppressed_colors, low_scale=0.5, high_scale=1.1, ignore_mask=suppression_mask),
-        detect_edges(gray),
-        detect_edges(gray, low_scale=0.5, high_scale=1.1),
+    variant_specs = [
+        (high_contrast_without_suppressed_colors, 0.35, 0.9, suppression_mask),
+        (high_contrast_without_suppressed_colors, 0.5, 1.1, suppression_mask),
+        (gray_without_suppressed_colors, 0.66, 1.33, suppression_mask),
+        (gray_without_suppressed_colors, 0.5, 1.1, suppression_mask),
+        (gray, 0.66, 1.33, None),
+        (gray, 0.5, 1.1, None),
     ]
+    variants: list[EdgeArtifacts] = []
+    if deadline is not None:
+        variant_specs = variant_specs[:4]
+
+    for variant_gray, low_scale, high_scale, ignore_mask in variant_specs:
+        check_deadline(deadline)
+        variants.append(
+            detect_edges(
+                variant_gray,
+                low_scale=low_scale,
+                high_scale=high_scale,
+                ignore_mask=ignore_mask,
+            )
+        )
     return working_image, variants
 
 
@@ -196,13 +226,39 @@ def original_aruco_dictionary() -> Any | None:
     return aruco.Dictionary_get(dictionary_id)
 
 
-def aruco_preprocess_variants(image: np.ndarray) -> list[tuple[str, np.ndarray]]:
+@lru_cache(maxsize=1)
+def aruco_detector_backend() -> tuple[Any, Any | None, Any | None, Any | None] | None:
+    aruco = aruco_module()
+    dictionary = original_aruco_dictionary()
+    if aruco is None or dictionary is None:
+        return None
+
+    if hasattr(aruco, "ArucoDetector"):
+        parameters = aruco.DetectorParameters()
+        parameters.errorCorrectionRate = 0.25
+        parameters.minMarkerPerimeterRate = 0.02
+        parameters.maxMarkerPerimeterRate = 4.0
+        return aruco, aruco.ArucoDetector(dictionary, parameters), None, None
+
+    parameters = aruco.DetectorParameters_create()
+    parameters.errorCorrectionRate = 0.25
+    parameters.minMarkerPerimeterRate = 0.02
+    parameters.maxMarkerPerimeterRate = 4.0
+    return aruco, None, dictionary, parameters
+
+
+def aruco_preprocess_variants(image: np.ndarray) -> Iterable[tuple[str, np.ndarray]]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(6, 6))
     equalized = clahe.apply(gray)
     sharpened = cv2.addWeighted(equalized, 1.8, cv2.GaussianBlur(equalized, (0, 0), 1.2), -0.8, 0)
     _, otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    cleaned_otsu = cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, kernel)
+    yield "cleaned_otsu", cleaned_otsu
+    yield "otsu", otsu
+
     adaptive = cv2.adaptiveThreshold(
         sharpened,
         255,
@@ -211,40 +267,31 @@ def aruco_preprocess_variants(image: np.ndarray) -> list[tuple[str, np.ndarray]]
         35,
         5,
     )
-    kernel = np.ones((3, 3), dtype=np.uint8)
-    cleaned_otsu = cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, kernel)
     cleaned_adaptive = cv2.morphologyEx(adaptive, cv2.MORPH_CLOSE, kernel)
-    return [
-        ("cleaned_otsu", cleaned_otsu),
-        ("otsu", otsu),
-        ("cleaned_adaptive", cleaned_adaptive),
-        ("adaptive", adaptive),
-        ("sharpened", sharpened),
-        ("equalized", equalized),
-        ("gray", gray),
-    ]
+    yield "cleaned_adaptive", cleaned_adaptive
+    yield "adaptive", adaptive
+    yield "sharpened", sharpened
+    yield "equalized", equalized
+    yield "gray", gray
 
 
-def detect_aruco_quad_candidates(image: np.ndarray, min_area: float) -> list[Candidate]:
-    aruco = aruco_module()
-    dictionary = original_aruco_dictionary()
-    if aruco is None or dictionary is None:
+def detect_aruco_quad_candidates(
+    image: np.ndarray,
+    min_area: float,
+    deadline: float | None = None,
+) -> list[Candidate]:
+    backend = aruco_detector_backend()
+    if backend is None:
         return []
+    aruco, detector, dictionary, parameters = backend
 
     candidates: list[Candidate] = []
     for name, candidate_image in aruco_preprocess_variants(image):
-        if hasattr(aruco, "ArucoDetector"):
-            parameters = aruco.DetectorParameters()
-            parameters.errorCorrectionRate = 0.25
-            parameters.minMarkerPerimeterRate = 0.02
-            parameters.maxMarkerPerimeterRate = 4.0
-            detector = aruco.ArucoDetector(dictionary, parameters)
+        check_deadline(deadline)
+        variant_candidates: list[Candidate] = []
+        if detector is not None:
             corners, ids, _ = detector.detectMarkers(candidate_image)
         else:
-            parameters = aruco.DetectorParameters_create()
-            parameters.errorCorrectionRate = 0.25
-            parameters.minMarkerPerimeterRate = 0.02
-            parameters.maxMarkerPerimeterRate = 4.0
             corners, ids, _ = aruco.detectMarkers(candidate_image, dictionary, parameters=parameters)
 
         if ids is None:
@@ -257,7 +304,10 @@ def detect_aruco_quad_candidates(image: np.ndarray, min_area: float) -> list[Can
             quad = order_corners(marker_corners.reshape(4, 2).astype(np.float32))
             if is_valid_quad(quad, width, height, min_area):
                 source = f"aruco:{name}:id-{marker_id}"
-                candidates.append(Candidate(quad=quad, source=source, variant_idx=0))
+                variant_candidates.append(Candidate(quad=quad, source=source, variant_idx=0))
+        if variant_candidates:
+            candidates.extend(variant_candidates)
+            break
 
     candidates.sort(key=lambda candidate: -polygon_area(candidate.quad))
     return candidates
@@ -1217,6 +1267,7 @@ def refine_candidate(
     height: int,
     min_area: float,
     reg_weight: float = 0.05,
+    max_nfev: int = 200,
 ) -> np.ndarray:
     initial_quad = order_corners(initial_quad).astype(np.float32)
     initial_quad[:, 0] = np.clip(initial_quad[:, 0], 0.0, width - 1.0)
@@ -1263,7 +1314,7 @@ def refine_candidate(
         residuals,
         initial_quad.reshape(-1),
         bounds=(lower, upper),
-        max_nfev=200,
+        max_nfev=max_nfev,
     )
     refined = order_corners(result.x.reshape(4, 2))
     if not is_valid_quad(refined, width, height, min_area):
@@ -1284,7 +1335,37 @@ def collect_line_debug(image: np.ndarray, edge_variants: list[EdgeArtifacts]) ->
     return debug_items
 
 
-def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResult:
+def fit_aruco_square(image: np.ndarray, deadline: float | None = None) -> FitResult | None:
+    height, width = image.shape[:2]
+    min_area = max(0.01 * width * height, 400.0)
+    aruco_candidates = detect_aruco_quad_candidates(image, min_area, deadline)
+    if not aruco_candidates:
+        return None
+
+    best_aruco = max(
+        aruco_candidates,
+        key=lambda candidate: marker_likeness_score(image, candidate.quad),
+    )
+    aruco_quad = best_aruco.quad
+    source = best_aruco.source
+    inner_quad = refine_quad_to_inner_black_marker(image, aruco_quad, width, height, min_area)
+    if inner_quad is not None:
+        aruco_quad = inner_quad
+        source = f"{source}:inner_black"
+
+    return FitResult(
+        quad=aruco_quad,
+        score=marker_likeness_score(image, aruco_quad),
+        rejected=[candidate.quad for candidate in aruco_candidates if candidate is not best_aruco],
+        source=source,
+    )
+
+
+def fit_square(
+    image: np.ndarray,
+    edge_variants: list[EdgeArtifacts],
+    deadline: float | None = None,
+) -> FitResult:
     height, width = image.shape[:2]
     min_area = max(0.01 * width * height, 400.0)
     yellow_mask = yellow_pipe_mask(image)
@@ -1292,31 +1373,8 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
     all_candidates: list[Candidate] = []
     rejected_debug: list[np.ndarray] = []
 
-    aruco_candidates = detect_aruco_quad_candidates(image, min_area)
-    if aruco_candidates:
-        best_aruco = max(
-            aruco_candidates,
-            key=lambda candidate: marker_likeness_score(image, candidate.quad),
-        )
-        aruco_quad = best_aruco.quad
-        source = best_aruco.source
-        inner_quad = refine_quad_to_inner_black_marker(image, aruco_quad, width, height, min_area)
-        if inner_quad is not None:
-            aruco_quad = inner_quad
-            source = f"{source}:inner_black"
-        score = edge_distance_score(
-            aruco_quad,
-            edge_variants[0].dist,
-            edge_variants[0].grad_mag,
-        )
-        return FitResult(
-            quad=aruco_quad,
-            score=score,
-            rejected=[candidate.quad for candidate in aruco_candidates if candidate is not best_aruco],
-            source=source,
-        )
-
     for idx, artifacts in enumerate(edge_variants):
+        check_deadline(deadline)
         contour_candidates = [
             candidate
             for contour_mask in artifacts.contour_masks
@@ -1370,15 +1428,26 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
     )
     all_candidates = non_max_suppression_candidates(all_candidates)
     shortlist = all_candidates[: min(12, len(all_candidates))]
+    if deadline is not None:
+        shortlist = shortlist[: min(4, len(shortlist))]
 
     best_quad = None
     best_score = float("inf")
     best_selection_score = float("inf")
 
     for candidate in shortlist:
+        check_deadline(deadline)
         artifacts = edge_variants[candidate.variant_idx]
         reg_weight = 0.20 if candidate.source == "hough_dominant" else 0.05
-        refined = refine_candidate(candidate.quad, artifacts.dist, width, height, min_area, reg_weight=reg_weight)
+        refined = refine_candidate(
+            candidate.quad,
+            artifacts.dist,
+            width,
+            height,
+            min_area,
+            reg_weight=reg_weight,
+            max_nfev=40 if deadline is not None else 200,
+        )
         refined_score = edge_distance_score(refined, artifacts.dist, artifacts.grad_mag)
         refined_candidate = Candidate(quad=refined, source=candidate.source, variant_idx=candidate.variant_idx)
         selection_score = candidate_selection_score(
@@ -1570,6 +1639,7 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         debug: bool = False,
         debug_dir: Path | str = Path("data/debug"),
         experimental_color_repaint_retry: bool = False,
+        max_processing_seconds: float | None = None,
     ) -> None:
         if not output_queue:
             raise ValueError("Module output_queue cannot be empty.")
@@ -1583,6 +1653,7 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         self.debug = debug
         self.debug_dir = Path(debug_dir)
         self.experimental_color_repaint_retry = experimental_color_repaint_retry
+        self.max_processing_seconds = max_processing_seconds
         if self.debug:
             self.debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1646,9 +1717,20 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         _write_debug_image(self._debug_cutout_path, cutout)
 
     def _detect_fit(self, image: np.ndarray) -> tuple[FitResult, list[LineDebug]]:
-        _, edge_variants = build_edge_variants(image, self.preprocess_mode)
+        deadline = (
+            time.monotonic() + self.max_processing_seconds
+            if self.max_processing_seconds is not None and self.max_processing_seconds > 0
+            else None
+        )
+        aruco_fit = fit_aruco_square(image, deadline)
+        if aruco_fit is not None:
+            return aruco_fit, []
+        if deadline is not None:
+            raise MarkerProcessingTimeout("marker fallback skipped to stay under the image time limit")
+
+        _, edge_variants = build_edge_variants(image, self.preprocess_mode, deadline)
         line_debug = collect_line_debug(image, edge_variants) if self.debug else []
-        return fit_square(image, edge_variants), line_debug
+        return fit_square(image, edge_variants, deadline), line_debug
 
     async def process(
         self,

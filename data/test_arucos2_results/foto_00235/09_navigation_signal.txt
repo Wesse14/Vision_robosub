@@ -1,8 +1,0 @@
-signal=TRY_AGAIN_MOVE_CLOSER
-marker_id=None
-reason=mask and grid ids do not strongly agree
-aruco_ids=()
-mask_match_id=3
-mask_match_score=0.655
-grid_match_id=15
-grid_match_score=0.898

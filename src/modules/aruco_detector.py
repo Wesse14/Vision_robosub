@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,35 @@ def _original_dictionary() -> Any:
     return aruco.Dictionary_get(dictionary_id)
 
 
+@lru_cache(maxsize=1)
+def _detector_backend() -> tuple[Any, Any | None, Any | None, Any | None]:
+    aruco = _aruco_module()
+    dictionary = _original_dictionary()
+
+    if hasattr(aruco, "ArucoDetector"):
+        parameters = aruco.DetectorParameters()
+        parameters.adaptiveThreshWinSizeMin = 3
+        parameters.adaptiveThreshWinSizeMax = 53
+        parameters.adaptiveThreshWinSizeStep = 10
+        parameters.minMarkerPerimeterRate = 0.02
+        parameters.maxMarkerPerimeterRate = 4.0
+        parameters.polygonalApproxAccuracyRate = 0.04
+        parameters.errorCorrectionRate = 0.25
+        parameters.minCornerDistanceRate = 0.03
+        return aruco, aruco.ArucoDetector(dictionary, parameters), None, None
+
+    parameters = aruco.DetectorParameters_create()
+    parameters.adaptiveThreshWinSizeMin = 3
+    parameters.adaptiveThreshWinSizeMax = 53
+    parameters.adaptiveThreshWinSizeStep = 10
+    parameters.minMarkerPerimeterRate = 0.02
+    parameters.maxMarkerPerimeterRate = 4.0
+    parameters.polygonalApproxAccuracyRate = 0.04
+    parameters.errorCorrectionRate = 0.25
+    parameters.minCornerDistanceRate = 0.03
+    return aruco, None, dictionary, parameters
+
+
 def _resize_variant(name: str, image: np.ndarray, scale: float) -> PreprocessVariant:
     if scale == 1.0:
         return PreprocessVariant(name, image, scale)
@@ -115,18 +145,33 @@ def _resize_variant(name: str, image: np.ndarray, scale: float) -> PreprocessVar
     return PreprocessVariant(name, resized, scale)
 
 
-def _preprocess_variants(image: np.ndarray) -> list[PreprocessVariant]:
+def _sharpened_gray(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(6, 6))
     equalized = clahe.apply(gray)
-    sharpened = cv2.addWeighted(equalized, 1.8, cv2.GaussianBlur(equalized, (0, 0), 1.2), -0.8, 0)
+    return cv2.addWeighted(equalized, 1.8, cv2.GaussianBlur(equalized, (0, 0), 1.2), -0.8, 0)
+
+
+def _cleaned_otsu(image: np.ndarray) -> np.ndarray:
+    sharpened = _sharpened_gray(image)
+    return _cleaned_otsu_from_sharpened(sharpened)
+
+
+def _cleaned_otsu_from_sharpened(sharpened: np.ndarray) -> np.ndarray:
     _, otsu = cv2.threshold(
         sharpened,
         0,
         255,
         cv2.THRESH_BINARY | cv2.THRESH_OTSU,
     )
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    return cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, kernel)
+
+
+def _preprocess_variants(image: np.ndarray) -> list[PreprocessVariant]:
+    sharpened = _sharpened_gray(image)
+    _, otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     adaptive = cv2.adaptiveThreshold(
         sharpened,
         255,
@@ -136,7 +181,7 @@ def _preprocess_variants(image: np.ndarray) -> list[PreprocessVariant]:
         5,
     )
     kernel = np.ones((3, 3), dtype=np.uint8)
-    cleaned_otsu = cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, kernel)
+    cleaned_otsu = _cleaned_otsu_from_sharpened(sharpened)
     cleaned_adaptive = cv2.morphologyEx(adaptive, cv2.MORPH_CLOSE, kernel)
     black_white_strong = cv2.medianBlur(cleaned_adaptive, 3)
 
@@ -156,31 +201,10 @@ def _preprocess_variants(image: np.ndarray) -> list[PreprocessVariant]:
 
 
 def _detect_on_image(image: np.ndarray) -> tuple[Any, Any]:
-    aruco = _aruco_module()
-    dictionary = _original_dictionary()
-
-    if hasattr(aruco, "ArucoDetector"):
-        parameters = aruco.DetectorParameters()
-        parameters.adaptiveThreshWinSizeMin = 3
-        parameters.adaptiveThreshWinSizeMax = 53
-        parameters.adaptiveThreshWinSizeStep = 10
-        parameters.minMarkerPerimeterRate = 0.02
-        parameters.maxMarkerPerimeterRate = 4.0
-        parameters.polygonalApproxAccuracyRate = 0.04
-        parameters.errorCorrectionRate = 0.25
-        parameters.minCornerDistanceRate = 0.03
-        detector = aruco.ArucoDetector(dictionary, parameters)
+    aruco, detector, dictionary, parameters = _detector_backend()
+    if detector is not None:
         corners, ids, _ = detector.detectMarkers(image)
     else:
-        parameters = aruco.DetectorParameters_create()
-        parameters.adaptiveThreshWinSizeMin = 3
-        parameters.adaptiveThreshWinSizeMax = 53
-        parameters.adaptiveThreshWinSizeStep = 10
-        parameters.minMarkerPerimeterRate = 0.02
-        parameters.maxMarkerPerimeterRate = 4.0
-        parameters.polygonalApproxAccuracyRate = 0.04
-        parameters.errorCorrectionRate = 0.25
-        parameters.minCornerDistanceRate = 0.03
         corners, ids, _ = aruco.detectMarkers(image, dictionary, parameters=parameters)
 
     return corners, ids
@@ -216,10 +240,11 @@ def _binary_normalize(image: np.ndarray, size: int = MASK_MATCH_SIZE) -> np.ndar
     return binary.astype(np.uint8)
 
 
-def _load_mask_templates(template_dir: Path = DEFAULT_MASK_TEMPLATE_DIR) -> list[MaskTemplate]:
+@lru_cache(maxsize=8)
+def _load_mask_templates(template_dir: Path = DEFAULT_MASK_TEMPLATE_DIR) -> tuple[MaskTemplate, ...]:
     if not template_dir.exists():
         logger.warning("ArUco mask template directory not found: %s", template_dir)
-        return []
+        return ()
 
     templates: list[MaskTemplate] = []
     for path in sorted(template_dir.glob("*.png")):
@@ -234,7 +259,15 @@ def _load_mask_templates(template_dir: Path = DEFAULT_MASK_TEMPLATE_DIR) -> list
             logger.warning("Skipping unreadable ArUco mask template: %s", path)
             continue
         templates.append(MaskTemplate(marker_id=marker_id, image=_binary_normalize(image)))
-    return templates
+    return tuple(templates)
+
+
+@lru_cache(maxsize=8)
+def _load_grid_templates(template_dir: Path = DEFAULT_MASK_TEMPLATE_DIR) -> tuple[MaskTemplate, ...]:
+    return tuple(
+        MaskTemplate(marker_id=template.marker_id, image=_grid_from_binary(template.image))
+        for template in _load_mask_templates(template_dir)
+    )
 
 
 def _candidate_crops(binary: np.ndarray) -> list[np.ndarray]:
@@ -339,12 +372,8 @@ def match_aruco_grid(
     high_contrast_image: np.ndarray,
     template_dir: Path = DEFAULT_MASK_TEMPLATE_DIR,
 ) -> MaskMatch:
-    templates = _load_mask_templates(template_dir)
+    template_grids = _load_grid_templates(template_dir)
     template_source = str(template_dir)
-    template_grids = [
-        MaskTemplate(marker_id=template.marker_id, image=_grid_from_binary(template.image))
-        for template in templates
-    ]
     candidates = _grid_candidates(high_contrast_image)
     if not template_grids or not candidates:
         fallback = _grid_from_binary(high_contrast_image)
@@ -555,7 +584,58 @@ def _high_contrast_retry(annotated_image: np.ndarray) -> tuple[tuple[int, ...], 
 
 
 def detect_original_aruco_markers(image: np.ndarray, min_consensus: int = 2) -> ArucoDetection:
-    aruco = _aruco_module()
+    high_contrast_image = _high_contrast_black_white(image)
+    mask_match = _match_with_extended_fallback(high_contrast_image, match_aruco_mask)
+    grid_match = _match_with_extended_fallback(high_contrast_image, match_aruco_grid)
+    navigation_signal, navigation_marker_id, navigation_reason = marker_navigation_signal(
+        (),
+        (),
+        mask_match,
+        grid_match,
+    )
+    mask_match_image = draw_mask_match(mask_match)
+    grid_match_image = draw_mask_match(grid_match)
+    grid_image = _render_grid(grid_match.candidate_image)
+
+    if navigation_signal == "NEXT":
+        annotated = draw_navigation_signal(
+            image.copy(),
+            navigation_signal,
+            navigation_marker_id,
+            navigation_reason,
+        )
+        high_contrast_annotated_image = draw_navigation_signal(
+            cv2.cvtColor(high_contrast_image, cv2.COLOR_GRAY2BGR),
+            navigation_signal,
+            navigation_marker_id,
+            navigation_reason,
+        )
+        return ArucoDetection(
+            ids=(),
+            corners=(),
+            annotated_image=annotated,
+            preprocessed_image=high_contrast_image,
+            preprocessing="mask_grid",
+            confidence="mask_grid",
+            high_contrast_ids=(),
+            high_contrast_image=high_contrast_image,
+            high_contrast_annotated_image=high_contrast_annotated_image,
+            mask_match_id=mask_match.marker_id,
+            mask_match_score=mask_match.score,
+            mask_match_rotation=mask_match.rotation,
+            mask_match_source=mask_match.template_source,
+            mask_match_image=mask_match_image,
+            grid_match_id=grid_match.marker_id,
+            grid_match_score=grid_match.score,
+            grid_match_rotation=grid_match.rotation,
+            grid_match_source=grid_match.template_source,
+            grid_image=grid_image,
+            grid_match_image=grid_match_image,
+            navigation_signal=navigation_signal,
+            navigation_marker_id=navigation_marker_id,
+            navigation_reason=navigation_reason,
+        )
+
     variants = _preprocess_variants(image)
     best_variant = variants[0]
     detections: list[DetectionCandidate] = []
@@ -600,10 +680,11 @@ def detect_original_aruco_markers(image: np.ndarray, min_consensus: int = 2) -> 
     elif detections:
         detections.sort(key=lambda detection: detection.variant.scale)
         best_variant = detections[0].variant
-        logger.warning(
-            "Ignoring low-confidence ArUco id(s) without preprocessing consensus: %s",
-            ", ".join(str(detection.marker_id) for detection in detections),
-        )
+        if logger.isEnabledFor(logging.WARNING):
+            logger.warning(
+                "Ignoring low-confidence ArUco id(s) without preprocessing consensus: %s",
+                ", ".join(str(detection.marker_id) for detection in detections),
+            )
 
     annotated = image.copy()
     detected_ids: tuple[int, ...]
@@ -623,6 +704,7 @@ def detect_original_aruco_markers(image: np.ndarray, min_consensus: int = 2) -> 
             cv2.LINE_AA,
         )
     else:
+        aruco = _aruco_module()
         draw_corners = [detection.corners for detection in accepted]
         draw_ids = np.asarray([[detection.marker_id] for detection in accepted], dtype=np.int32)
         aruco.drawDetectedMarkers(annotated, draw_corners, draw_ids)
@@ -633,11 +715,6 @@ def detect_original_aruco_markers(image: np.ndarray, min_consensus: int = 2) -> 
         )
 
     high_contrast_ids, high_contrast_image, high_contrast_annotated_image = _high_contrast_retry(image)
-    mask_match = _match_with_extended_fallback(high_contrast_image, match_aruco_mask)
-    mask_match_image = draw_mask_match(mask_match)
-    grid_match = _match_with_extended_fallback(high_contrast_image, match_aruco_grid)
-    grid_match_image = draw_mask_match(grid_match)
-    grid_image = _render_grid(grid_match.candidate_image)
     navigation_signal, navigation_marker_id, navigation_reason = marker_navigation_signal(
         detected_ids,
         high_contrast_ids,
@@ -690,55 +767,16 @@ class ArucoDetectionModule(BaseModule[VideoFrame | np.ndarray]):
         self.debug = debug
         self.debug_dir = Path(debug_dir)
 
-    def _debug_output_path(self) -> Path:
-        return self.debug_dir / "aruco_detected.png"
+    def _debug_cleaned_otsu_2x_path(self) -> Path:
+        return self.debug_dir / "aruco_preprocess_cleaned_otsu_2x.png"
 
-    def _debug_preprocessed_path(self) -> Path:
-        return self.debug_dir / "aruco_preprocessed.png"
-
-    def _debug_high_contrast_path(self) -> Path:
-        return self.debug_dir / "aruco_high_contrast.png"
-
-    def _debug_high_contrast_retry_path(self) -> Path:
-        return self.debug_dir / "aruco_high_contrast_retry.png"
-
-    def _debug_mask_match_path(self) -> Path:
-        return self.debug_dir / "aruco_mask_match.png"
-
-    def _debug_grid_path(self) -> Path:
-        return self.debug_dir / "aruco_grid.png"
-
-    def _debug_grid_match_path(self) -> Path:
-        return self.debug_dir / "aruco_grid_match.png"
-
-    def _write_debug_images(self, image: np.ndarray, detection: ArucoDetection) -> None:
+    def _write_debug_images(self, image: np.ndarray) -> None:
         if not self.debug:
             return
         self.debug_dir.mkdir(parents=True, exist_ok=True)
-        if not cv2.imwrite(str(self._debug_output_path()), detection.annotated_image):
-            logger.warning("Failed to write ArUco debug image: %s", self._debug_output_path())
-        if not cv2.imwrite(str(self._debug_preprocessed_path()), detection.preprocessed_image):
-            logger.warning(
-                "Failed to write ArUco preprocessed image: %s",
-                self._debug_preprocessed_path(),
-            )
-        if not cv2.imwrite(str(self._debug_high_contrast_path()), detection.high_contrast_image):
-            logger.warning("Failed to write ArUco high contrast image: %s", self._debug_high_contrast_path())
-        if not cv2.imwrite(str(self._debug_high_contrast_retry_path()), detection.high_contrast_annotated_image):
-            logger.warning(
-                "Failed to write ArUco high contrast retry image: %s",
-                self._debug_high_contrast_retry_path(),
-            )
-        if not cv2.imwrite(str(self._debug_mask_match_path()), detection.mask_match_image):
-            logger.warning("Failed to write ArUco mask match image: %s", self._debug_mask_match_path())
-        if not cv2.imwrite(str(self._debug_grid_path()), detection.grid_image):
-            logger.warning("Failed to write ArUco grid image: %s", self._debug_grid_path())
-        if not cv2.imwrite(str(self._debug_grid_match_path()), detection.grid_match_image):
-            logger.warning("Failed to write ArUco grid match image: %s", self._debug_grid_match_path())
-        for variant in _preprocess_variants(image):
-            variant_path = self.debug_dir / f"aruco_preprocess_{variant.name}.png"
-            if not cv2.imwrite(str(variant_path), variant.image):
-                logger.warning("Failed to write ArUco preprocess variant: %s", variant_path)
+        cleaned_otsu_2x = _resize_variant("cleaned_otsu_2x", _cleaned_otsu(image), 2.0)
+        if not cv2.imwrite(str(self._debug_cleaned_otsu_2x_path()), cleaned_otsu_2x.image):
+            logger.warning("Failed to write ArUco cleaned Otsu 2x image: %s", self._debug_cleaned_otsu_2x_path())
 
     async def process(
         self,
@@ -748,7 +786,7 @@ class ArucoDetectionModule(BaseModule[VideoFrame | np.ndarray]):
         payload = message.payload
         image = payload.image if isinstance(payload, VideoFrame) else payload
         detection = detect_original_aruco_markers(image)
-        self._write_debug_images(image, detection)
+        self._write_debug_images(image)
 
         metadata: dict[str, Any] = dict(message.metadata)
         metadata["aruco_ids"] = detection.ids
@@ -773,14 +811,14 @@ class ArucoDetectionModule(BaseModule[VideoFrame | np.ndarray]):
             metadata.setdefault("timestamp_seconds", payload.timestamp_seconds)
             metadata.setdefault("loop_count", payload.loop_count)
 
-        if detection.ids:
+        if detection.ids and logger.isEnabledFor(logging.INFO):
             logger.info(
                 "Detected ArUco marker id(s) with %s preprocessing (%s): %s",
                 detection.preprocessing,
                 detection.confidence,
                 ", ".join(map(str, detection.ids)),
             )
-        else:
+        elif not detection.ids:
             logger.warning("No ArUco marker detected in rectified cutout.")
         if detection.mask_match_id is not None:
             logger.info(

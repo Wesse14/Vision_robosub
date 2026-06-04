@@ -1,8 +1,0 @@
-signal=NEXT
-marker_id=0
-reason=strong mask and grid agreement
-aruco_ids=()
-mask_match_id=0
-mask_match_score=0.887
-grid_match_id=0
-grid_match_score=1.000
