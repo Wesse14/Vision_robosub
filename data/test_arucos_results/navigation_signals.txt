@@ -1,21 +1,21 @@
 image	signal	combined_score	elapsed_ms	marker_id	aruco_ids	mask_match_id	mask_match_score	grid_match_id	grid_match_score	reason
-foto_00223.jpg	NEXT	0.926	370.8	63		63	0.926	63	1.000	strong mask and grid agreement
-foto_00636.jpg	NEXT	0.904	213.0	63		63	0.904	63	1.000	strong mask and grid agreement
-foto_00704.jpg	SKIPPED_TIMEOUT	0.000	202.7				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_01003.jpg	NEXT	0.919	308.0	63		63	0.919	63	1.000	strong mask and grid agreement
-foto_01140.jpg	SKIPPED_TIMEOUT	0.000	606.4				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_01145.jpg	SKIPPED_TIMEOUT	0.000	655.5				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_01152.jpg	SKIPPED_TIMEOUT	0.000	578.0				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_01420.jpg	NEXT	0.893	495.2	10		10	0.893	10	1.000	strong mask and grid agreement
-foto_01442.jpg	NEXT	0.907	422.8	10		10	0.907	10	1.000	strong mask and grid agreement
-foto_01632.jpg	SKIPPED_TIMEOUT	0.000	305.9				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_01634.jpg	NEXT	0.870	419.9	63		63	0.870	63	0.980	strong mask and grid agreement
-foto_02080.jpg	SKIPPED_TIMEOUT	0.000	295.0				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_02453.jpg	NEXT	0.910	400.2	63		63	0.910	63	1.000	strong mask and grid agreement
-foto_02454.jpg	NEXT	0.916	362.6	63		63	0.916	63	1.000	strong mask and grid agreement
-foto_02455.jpg	NEXT	0.909	359.2	63		63	0.909	63	1.000	strong mask and grid agreement
-foto_02461.jpg	SKIPPED_TIMEOUT	0.000	230.3				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_02584.jpg	SKIPPED_TIMEOUT	0.000	251.2				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_02588.jpg	NEXT	0.927	411.2	63		63	0.927	63	1.000	strong mask and grid agreement
-foto_03075.jpg	SKIPPED_TIMEOUT	0.000	304.2				0.000		0.000	marker fallback skipped to stay under the configured time limit
-foto_03076.jpg	SKIPPED_TIMEOUT	0.000	344.8				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_00223.jpg	NEXT	0.926	1000.4	63		63	0.926	63	1.000	strong mask and grid agreement
+foto_00636.jpg	NEXT	0.904	864.4	63		63	0.904	63	1.000	strong mask and grid agreement
+foto_00704.jpg	SKIPPED_TIMEOUT	0.000	315.4				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_01003.jpg	NEXT	0.919	655.7	63		63	0.919	63	1.000	strong mask and grid agreement
+foto_01140.jpg	SKIPPED_TIMEOUT	0.000	710.3				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_01145.jpg	SKIPPED_TIMEOUT	0.000	781.8				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_01152.jpg	SKIPPED_TIMEOUT	0.000	414.7				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_01420.jpg	NEXT	0.893	431.6	10		10	0.893	10	1.000	strong mask and grid agreement
+foto_01442.jpg	NEXT	0.907	494.7	10		10	0.907	10	1.000	strong mask and grid agreement
+foto_01632.jpg	SKIPPED_TIMEOUT	0.000	358.1				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_01634.jpg	NEXT	0.870	509.7	63		63	0.870	63	0.980	strong mask and grid agreement
+foto_02080.jpg	SKIPPED_TIMEOUT	0.000	362.6				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_02453.jpg	NEXT	0.910	520.3	63		63	0.910	63	1.000	strong mask and grid agreement
+foto_02454.jpg	NEXT	0.916	486.1	63		63	0.916	63	1.000	strong mask and grid agreement
+foto_02455.jpg	NEXT	0.909	489.1	63		63	0.909	63	1.000	strong mask and grid agreement
+foto_02461.jpg	SKIPPED_TIMEOUT	0.000	316.9				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_02584.jpg	SKIPPED_TIMEOUT	0.000	312.2				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_02588.jpg	NEXT	0.927	539.9	63		63	0.927	63	1.000	strong mask and grid agreement
+foto_03075.jpg	SKIPPED_TIMEOUT	0.000	454.2				0.000		0.000	marker fallback skipped to stay under the configured time limit
+foto_03076.jpg	SKIPPED_TIMEOUT	0.000	484.4				0.000		0.000	marker fallback skipped to stay under the configured time limit

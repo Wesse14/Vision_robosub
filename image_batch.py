@@ -109,6 +109,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Skip an image once processing exceeds this many seconds. Use 0 to disable.",
     )
     parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Keep watching the input directory and process new or changed images.",
+    )
+    parser.add_argument(
+        "--watch-poll-seconds",
+        default=0.5,
+        type=float,
+        help="How often to check for new images when --watch is enabled.",
+    )
+    parser.add_argument(
         "--log-level",
         default="ERROR",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -149,6 +160,38 @@ def iter_image_paths(input_dir: Path) -> list[Path]:
         for path in input_dir.iterdir()
         if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
     )
+
+
+def image_fingerprint(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
+async def wait_until_file_is_stable(
+    path: Path,
+    *,
+    poll_seconds: float,
+    checks: int = 2,
+) -> tuple[int, int] | None:
+    previous = image_fingerprint(path)
+    if previous is None:
+        return None
+
+    stable_checks = 0
+    while stable_checks < checks:
+        await asyncio.sleep(max(poll_seconds, 0.05))
+        current = image_fingerprint(path)
+        if current is None:
+            return None
+        if current == previous:
+            stable_checks += 1
+        else:
+            stable_checks = 0
+            previous = current
+    return previous
 
 
 def clear_generated_video_frames(input_dir: Path) -> None:
@@ -710,18 +753,47 @@ async def run_image(path: Path, args: argparse.Namespace) -> NavigationSummary |
 async def run_batch(args: argparse.Namespace) -> None:
     refresh_video_frames(args.video_dir, args.input_dir, args.frames_per_video)
     clear_output_dir(args.output_dir)
-    image_paths = iter_image_paths(args.input_dir)
-    if not image_paths:
-        logger.warning("No test images found in %s", args.input_dir)
-        return
-
+    processed: dict[Path, tuple[int, int]] = {}
     summaries: list[NavigationSummary] = []
-    for path in image_paths:
-        summary = await run_image(path, args)
-        if summary is not None:
-            summaries.append(summary)
 
-    write_navigation_summary(args.output_dir, summaries)
+    while True:
+        image_paths = iter_image_paths(args.input_dir)
+        if not image_paths and not args.watch:
+            logger.warning("No test images found in %s", args.input_dir)
+            return
+
+        ran_any = False
+        for path in image_paths:
+            current_fingerprint = image_fingerprint(path)
+            if current_fingerprint is None or processed.get(path) == current_fingerprint:
+                continue
+
+            fingerprint = (
+                await wait_until_file_is_stable(
+                    path,
+                    poll_seconds=min(max(args.watch_poll_seconds, 0.05), 0.5),
+                )
+                if args.watch
+                else current_fingerprint
+            )
+            if fingerprint is None or processed.get(path) == fingerprint:
+                continue
+
+            summary = await run_image(path, args)
+            processed[path] = fingerprint
+            ran_any = True
+            if summary is not None:
+                summaries = [existing for existing in summaries if existing.image != summary.image]
+                summaries.append(summary)
+
+        if ran_any:
+            summaries.sort(key=lambda summary: summary.image)
+            write_navigation_summary(args.output_dir, summaries)
+
+        if not args.watch:
+            return
+
+        await asyncio.sleep(max(args.watch_poll_seconds, 0.05))
 
 
 def main() -> None:
