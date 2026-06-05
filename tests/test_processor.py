@@ -620,9 +620,51 @@ def test_navigation_summary_text_includes_signal_score_and_ids() -> None:
     assert "foto_00218.jpg\tNEXT\t0.952\t123.4\t63\t63\t63\t0.952\t63\t0.981\tstrong mask and grid agreement" in text
 
 
+def test_navigation_summary_text_can_be_header_only() -> None:
+    text = image_batch.navigation_summary_text([])
+
+    assert text == (
+        "image\tsignal\tcombined_score\telapsed_ms\tmarker_id\taruco_ids\t"
+        "mask_match_id\tmask_match_score\tgrid_match_id\tgrid_match_score\treason\n"
+    )
+
+
 def test_full_pipeline_suppresses_visual_results_but_aruco_keeps_them() -> None:
     assert image_batch.writes_visual_results("full") is False
     assert image_batch.writes_visual_results("aruco") is True
+
+
+def test_watch_mode_preserves_existing_navigation_summary(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        input_dir = tmp_path / "input"
+        output_dir = tmp_path / "output"
+        input_dir.mkdir()
+        output_dir.mkdir()
+        summary_path = output_dir / image_batch.NAVIGATION_SUMMARY_FILENAME
+        summary_path.write_text("existing summary\n", encoding="utf-8")
+        args = image_batch.parse_args(
+            [
+                "--input-dir",
+                str(input_dir),
+                "--output-dir",
+                str(output_dir),
+                "--pipeline",
+                "full",
+                "--video-dir",
+                str(tmp_path / "no_videos"),
+                "--watch",
+            ]
+        )
+
+        task = asyncio.create_task(image_batch.run_batch(args))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert summary_path.read_text(encoding="utf-8") == "existing summary\n"
+
+    asyncio.run(scenario())
 
 
 def test_marker_quad_refinement_moves_to_inner_black_marker() -> None:

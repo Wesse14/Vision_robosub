@@ -345,8 +345,7 @@ def navigation_summary_text(summaries: Sequence[NavigationSummary]) -> str:
 
 
 def write_navigation_summary(output_dir: Path, summaries: Sequence[NavigationSummary]) -> None:
-    if summaries:
-        write_text(output_dir / NAVIGATION_SUMMARY_FILENAME, navigation_summary_text(summaries))
+    write_text(output_dir / NAVIGATION_SUMMARY_FILENAME, navigation_summary_text(summaries))
 
 
 def image_time_limit_seconds(args: argparse.Namespace) -> float | None:
@@ -752,7 +751,13 @@ async def run_image(path: Path, args: argparse.Namespace) -> NavigationSummary |
 
 async def run_batch(args: argparse.Namespace) -> None:
     refresh_video_frames(args.video_dir, args.input_dir, args.frames_per_video)
-    clear_output_dir(args.output_dir)
+    if args.watch:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = args.output_dir / NAVIGATION_SUMMARY_FILENAME
+        if not summary_path.exists():
+            write_navigation_summary(args.output_dir, [])
+    else:
+        clear_output_dir(args.output_dir)
     processed: dict[Path, tuple[int, int]] = {}
     summaries: list[NavigationSummary] = []
 
