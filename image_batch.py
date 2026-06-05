@@ -762,7 +762,6 @@ async def run_batch(args: argparse.Namespace) -> None:
             logger.warning("No test images found in %s", args.input_dir)
             return
 
-        ran_any = False
         for path in image_paths:
             current_fingerprint = image_fingerprint(path)
             if current_fingerprint is None or processed.get(path) == current_fingerprint:
@@ -781,14 +780,11 @@ async def run_batch(args: argparse.Namespace) -> None:
 
             summary = await run_image(path, args)
             processed[path] = fingerprint
-            ran_any = True
             if summary is not None:
                 summaries = [existing for existing in summaries if existing.image != summary.image]
                 summaries.append(summary)
-
-        if ran_any:
-            summaries.sort(key=lambda summary: summary.image)
-            write_navigation_summary(args.output_dir, summaries)
+                summaries.sort(key=lambda summary: summary.image)
+                write_navigation_summary(args.output_dir, summaries)
 
         if not args.watch:
             return
