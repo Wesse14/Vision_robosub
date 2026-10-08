@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -17,16 +19,102 @@ from .image_enhancer import EnhancementMode, apply_enhancement, validate_color_i
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_ARUCO_IDS = frozenset(range(101))
+MAX_QUAD_SIDE_RATIO = 2.8
+MAX_QUAD_OPPOSITE_SIDE_RATIO = 2.2
+MIN_QUAD_ANGLE_DEG = 50.0
+MAX_QUAD_ANGLE_DEG = 130.0
+MAX_QUAD_BBOX_AREA_RATIO = 0.82
+MAX_QUAD_BBOX_SIDE_FRACTION = 0.92
+
+
+class MarkerProcessingTimeout(RuntimeError):
+    pass
+
+
+def check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise MarkerProcessingTimeout("marker processing exceeded the image time limit")
+
+
 @dataclass
 class EdgeArtifacts:
     gray: np.ndarray
     blur: np.ndarray
     edges_canny: np.ndarray
+    contour_masks: tuple[np.ndarray, ...]
     grad_mag: np.ndarray
     dist: np.ndarray
 
 
-def detect_edges(gray: np.ndarray, low_scale: float = 0.66, high_scale: float = 1.33) -> EdgeArtifacts:
+def yellow_pipe_mask(image: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower = np.array([12, 45, 70], dtype=np.uint8)
+    upper = np.array([45, 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+    kernel = np.ones((5, 5), np.uint8)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
+def blue_water_mask(image: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower = np.array([85, 35, 45], dtype=np.uint8)
+    upper = np.array([135, 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+    kernel = np.ones((5, 5), np.uint8)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
+def color_suppression_mask(image: np.ndarray) -> np.ndarray:
+    mask = cv2.bitwise_or(yellow_pipe_mask(image), blue_water_mask(image))
+    if not np.any(mask):
+        return mask
+    close_kernel = np.ones((7, 7), np.uint8)
+    open_kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kernel)
+    return cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
+
+
+def repaint_color_suppression_regions(
+    image: np.ndarray,
+    repaint_bgr: tuple[int, int, int] = (0, 0, 255),
+) -> np.ndarray:
+    repainted = image.copy()
+    mask = color_suppression_mask(image)
+    repainted[mask > 0] = repaint_bgr
+    return repainted
+
+
+def suppress_masked_edges(gray: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    if not np.any(mask):
+        return gray
+    suppressed = gray.copy()
+    background = int(np.median(gray[mask == 0])) if np.any(mask == 0) else int(np.median(gray))
+    expanded = cv2.dilate(mask, np.ones((9, 9), np.uint8), iterations=1)
+    suppressed[expanded > 0] = background
+    return suppressed
+
+
+def high_contrast_marker_gray(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(4, 4))
+    boosted = clahe.apply(gray)
+    sharpened = cv2.addWeighted(boosted, 2.0, cv2.GaussianBlur(boosted, (0, 0), 1.0), -1.0, 0)
+    _, binary = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    return cv2.medianBlur(binary, 3)
+
+
+def detect_edges(
+    gray: np.ndarray,
+    low_scale: float = 0.66,
+    high_scale: float = 1.33,
+    ignore_mask: np.ndarray | None = None,
+) -> EdgeArtifacts:
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -38,9 +126,36 @@ def detect_edges(gray: np.ndarray, low_scale: float = 0.66, high_scale: float = 
         high = min(255, low + 32)
 
     edges_canny = cv2.Canny(blur, low, high)
+    if ignore_mask is not None and np.any(ignore_mask):
+        blocked = cv2.dilate(ignore_mask, np.ones((7, 7), np.uint8), iterations=1)
+        edges_canny[blocked > 0] = 0
+
+    adaptive = cv2.adaptiveThreshold(
+        blur,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        35,
+        3,
+    )
+    adaptive_inv = cv2.bitwise_not(adaptive)
+    contour_kernel = np.ones((3, 3), dtype=np.uint8)
+    contour_masks = tuple(
+        cv2.morphologyEx(mask, cv2.MORPH_CLOSE, contour_kernel)
+        for mask in (adaptive, adaptive_inv)
+    )
+    if ignore_mask is not None and np.any(ignore_mask):
+        blocked = cv2.dilate(ignore_mask, np.ones((7, 7), np.uint8), iterations=1)
+        contour_masks = tuple(
+            cv2.bitwise_and(mask, cv2.bitwise_not(blocked))
+            for mask in contour_masks
+        )
+
     sobel_x = cv2.Sobel(blur, cv2.CV_32F, 1, 0, ksize=3)
     sobel_y = cv2.Sobel(blur, cv2.CV_32F, 0, 1, ksize=3)
     grad_mag = cv2.magnitude(sobel_x, sobel_y)
+    if ignore_mask is not None and np.any(ignore_mask):
+        grad_mag[ignore_mask > 0] = 0.0
     edge_binary = edges_canny > 0
     dist = cv2.distanceTransform((~edge_binary).astype(np.uint8), cv2.DIST_L2, 5)
 
@@ -48,24 +163,154 @@ def detect_edges(gray: np.ndarray, low_scale: float = 0.66, high_scale: float = 
         gray=gray,
         blur=blur,
         edges_canny=edges_canny,
+        contour_masks=contour_masks,
         grad_mag=grad_mag,
         dist=dist,
     )
 
 
-def build_edge_variants(image: np.ndarray, preprocess_mode: EnhancementMode = None) -> tuple[np.ndarray, list[EdgeArtifacts]]:
+def build_edge_variants(
+    image: np.ndarray,
+    preprocess_mode: EnhancementMode = None,
+    deadline: float | None = None,
+) -> tuple[np.ndarray, list[EdgeArtifacts]]:
     working_image = apply_enhancement(image, preprocess_mode) if preprocess_mode is not None else image
     gray = cv2.cvtColor(working_image, cv2.COLOR_BGR2GRAY)
-    variants = [
-        detect_edges(gray),
-        detect_edges(gray, low_scale=0.5, high_scale=1.1),
+    suppression_mask = color_suppression_mask(working_image)
+    gray_without_suppressed_colors = suppress_masked_edges(gray, suppression_mask)
+    high_contrast = high_contrast_marker_gray(working_image)
+    high_contrast_without_suppressed_colors = suppress_masked_edges(high_contrast, suppression_mask)
+    variant_specs = [
+        (high_contrast_without_suppressed_colors, 0.35, 0.9, suppression_mask),
+        (high_contrast_without_suppressed_colors, 0.5, 1.1, suppression_mask),
+        (gray_without_suppressed_colors, 0.66, 1.33, suppression_mask),
+        (gray_without_suppressed_colors, 0.5, 1.1, suppression_mask),
+        (gray, 0.66, 1.33, None),
+        (gray, 0.5, 1.1, None),
     ]
+    variants: list[EdgeArtifacts] = []
+    if deadline is not None:
+        variant_specs = variant_specs[:4]
+
+    for variant_gray, low_scale, high_scale, ignore_mask in variant_specs:
+        check_deadline(deadline)
+        variants.append(
+            detect_edges(
+                variant_gray,
+                low_scale=low_scale,
+                high_scale=high_scale,
+                ignore_mask=ignore_mask,
+            )
+        )
     return working_image, variants
 
 
 def fallback_edge_retry(artifacts: EdgeArtifacts) -> np.ndarray:
     kernel = np.ones((5, 5), np.uint8)
     return cv2.morphologyEx(artifacts.edges_canny, cv2.MORPH_CLOSE, kernel)
+
+
+def aruco_module() -> Any | None:
+    return getattr(cv2, "aruco", None)
+
+
+def original_aruco_dictionary() -> Any | None:
+    aruco = aruco_module()
+    if aruco is None:
+        return None
+    dictionary_id = getattr(aruco, "DICT_ARUCO_ORIGINAL", None)
+    if dictionary_id is None:
+        return None
+    if hasattr(aruco, "getPredefinedDictionary"):
+        return aruco.getPredefinedDictionary(dictionary_id)
+    return aruco.Dictionary_get(dictionary_id)
+
+
+@lru_cache(maxsize=1)
+def aruco_detector_backend() -> tuple[Any, Any | None, Any | None, Any | None] | None:
+    aruco = aruco_module()
+    dictionary = original_aruco_dictionary()
+    if aruco is None or dictionary is None:
+        return None
+
+    if hasattr(aruco, "ArucoDetector"):
+        parameters = aruco.DetectorParameters()
+        parameters.errorCorrectionRate = 0.25
+        parameters.minMarkerPerimeterRate = 0.02
+        parameters.maxMarkerPerimeterRate = 4.0
+        return aruco, aruco.ArucoDetector(dictionary, parameters), None, None
+
+    parameters = aruco.DetectorParameters_create()
+    parameters.errorCorrectionRate = 0.25
+    parameters.minMarkerPerimeterRate = 0.02
+    parameters.maxMarkerPerimeterRate = 4.0
+    return aruco, None, dictionary, parameters
+
+
+def aruco_preprocess_variants(image: np.ndarray) -> Iterable[tuple[str, np.ndarray]]:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(6, 6))
+    equalized = clahe.apply(gray)
+    sharpened = cv2.addWeighted(equalized, 1.8, cv2.GaussianBlur(equalized, (0, 0), 1.2), -0.8, 0)
+    _, otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    cleaned_otsu = cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, kernel)
+    yield "cleaned_otsu", cleaned_otsu
+    yield "otsu", otsu
+
+    adaptive = cv2.adaptiveThreshold(
+        sharpened,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        35,
+        5,
+    )
+    cleaned_adaptive = cv2.morphologyEx(adaptive, cv2.MORPH_CLOSE, kernel)
+    yield "cleaned_adaptive", cleaned_adaptive
+    yield "adaptive", adaptive
+    yield "sharpened", sharpened
+    yield "equalized", equalized
+    yield "gray", gray
+
+
+def detect_aruco_quad_candidates(
+    image: np.ndarray,
+    min_area: float,
+    deadline: float | None = None,
+) -> list[Candidate]:
+    backend = aruco_detector_backend()
+    if backend is None:
+        return []
+    aruco, detector, dictionary, parameters = backend
+
+    candidates: list[Candidate] = []
+    for name, candidate_image in aruco_preprocess_variants(image):
+        check_deadline(deadline)
+        variant_candidates: list[Candidate] = []
+        if detector is not None:
+            corners, ids, _ = detector.detectMarkers(candidate_image)
+        else:
+            corners, ids, _ = aruco.detectMarkers(candidate_image, dictionary, parameters=parameters)
+
+        if ids is None:
+            continue
+        height, width = image.shape[:2]
+        for marker_corners, marker_id in zip(corners, ids.flatten()):
+            marker_id = int(marker_id)
+            if marker_id not in ALLOWED_ARUCO_IDS:
+                continue
+            quad = order_corners(marker_corners.reshape(4, 2).astype(np.float32))
+            if is_valid_quad(quad, width, height, min_area):
+                source = f"aruco:{name}:id-{marker_id}"
+                variant_candidates.append(Candidate(quad=quad, source=source, variant_idx=0))
+        if variant_candidates:
+            candidates.extend(variant_candidates)
+            break
+
+    candidates.sort(key=lambda candidate: -polygon_area(candidate.quad))
+    return candidates
 
 
 EPSILONS = [0.01, 0.02, 0.03, 0.05, 0.08]
@@ -84,6 +329,7 @@ class FitResult:
     quad: np.ndarray
     score: float
     rejected: list[np.ndarray]
+    source: str = "unknown"
 
 
 @dataclass
@@ -130,6 +376,16 @@ def polygon_area(quad: np.ndarray) -> float:
     return abs(signed_area(quad))
 
 
+def quad_bbox_fraction(quad: np.ndarray, width: int, height: int) -> tuple[float, float, float]:
+    quad = order_corners(quad)
+    x0, y0 = np.min(quad, axis=0)
+    x1, y1 = np.max(quad, axis=0)
+    bbox_w_fraction = float(x1 - x0) / max(float(width), 1.0)
+    bbox_h_fraction = float(y1 - y0) / max(float(height), 1.0)
+    bbox_area_fraction = bbox_w_fraction * bbox_h_fraction
+    return bbox_w_fraction, bbox_h_fraction, bbox_area_fraction
+
+
 def is_convex_quad(quad: np.ndarray) -> bool:
     quad = np.asarray(quad, dtype=np.float32)
     crosses = []
@@ -149,6 +405,43 @@ def edge_lengths(quad: np.ndarray) -> np.ndarray:
     return np.linalg.norm(np.roll(quad, -1, axis=0) - quad, axis=1)
 
 
+def interior_angles_deg(quad: np.ndarray) -> np.ndarray:
+    quad = order_corners(quad)
+    angles: list[float] = []
+    for idx in range(4):
+        prev_pt = quad[(idx - 1) % 4]
+        pt = quad[idx]
+        next_pt = quad[(idx + 1) % 4]
+        v0 = prev_pt - pt
+        v1 = next_pt - pt
+        denom = max(float(np.linalg.norm(v0) * np.linalg.norm(v1)), 1e-6)
+        cos_angle = float(np.clip(np.dot(v0, v1) / denom, -1.0, 1.0))
+        angles.append(math.degrees(math.acos(cos_angle)))
+    return np.asarray(angles, dtype=np.float32)
+
+
+def quad_shape_penalty(quad: np.ndarray) -> float:
+    lengths = edge_lengths(quad)
+    if np.min(lengths) < 1e-3:
+        return 1e3
+    angles = interior_angles_deg(quad)
+    side_ratio = float(np.max(lengths) / max(np.min(lengths), 1e-6))
+    opposite_ratio_a = float(max(lengths[0], lengths[2]) / max(min(lengths[0], lengths[2]), 1e-6))
+    opposite_ratio_b = float(max(lengths[1], lengths[3]) / max(min(lengths[1], lengths[3]), 1e-6))
+    angle_penalty = float(
+        np.sum(
+            np.maximum(0.0, MIN_QUAD_ANGLE_DEG - angles)
+            + np.maximum(0.0, angles - MAX_QUAD_ANGLE_DEG)
+        )
+    ) * 0.65
+    side_penalty = max(0.0, side_ratio - MAX_QUAD_SIDE_RATIO) * 9.0
+    opposite_penalty = (
+        max(0.0, opposite_ratio_a - MAX_QUAD_OPPOSITE_SIDE_RATIO)
+        + max(0.0, opposite_ratio_b - MAX_QUAD_OPPOSITE_SIDE_RATIO)
+    ) * 7.0
+    return angle_penalty + side_penalty + opposite_penalty
+
+
 def is_valid_quad(quad: np.ndarray, width: int, height: int, min_area: float) -> bool:
     quad = order_corners(quad)
     if quad.shape != (4, 2):
@@ -163,11 +456,29 @@ def is_valid_quad(quad: np.ndarray, width: int, height: int, min_area: float) ->
         return False
     if not is_convex_quad(quad):
         return False
+    bbox_w_fraction, bbox_h_fraction, bbox_area_fraction = quad_bbox_fraction(quad, width, height)
+    if bbox_area_fraction > MAX_QUAD_BBOX_AREA_RATIO:
+        return False
+    if (
+        bbox_w_fraction > MAX_QUAD_BBOX_SIDE_FRACTION
+        and bbox_h_fraction > MAX_QUAD_BBOX_SIDE_FRACTION
+    ):
+        return False
     lengths = edge_lengths(quad)
-    if np.min(lengths) < 8:
+    min_edge = max(8.0, min(width, height) * 0.025)
+    if float(np.min(lengths)) < min_edge:
+        return False
+    if float(np.max(lengths) / max(np.min(lengths), 1e-6)) > MAX_QUAD_SIDE_RATIO:
+        return False
+    if float(max(lengths[0], lengths[2]) / max(min(lengths[0], lengths[2]), 1e-6)) > MAX_QUAD_OPPOSITE_SIDE_RATIO:
+        return False
+    if float(max(lengths[1], lengths[3]) / max(min(lengths[1], lengths[3]), 1e-6)) > MAX_QUAD_OPPOSITE_SIDE_RATIO:
+        return False
+    angles = interior_angles_deg(quad)
+    if float(np.min(angles)) < MIN_QUAD_ANGLE_DEG or float(np.max(angles)) > MAX_QUAD_ANGLE_DEG:
         return False
     skinny = polygon_area(quad) / max(float(np.sum(lengths) ** 2), 1.0)
-    if skinny < 0.005:
+    if skinny < 0.012:
         return False
     return True
 
@@ -182,11 +493,79 @@ def dedupe_candidates(quads: Iterable[np.ndarray], tol: float = 10.0) -> list[np
     return unique
 
 
-def find_contour_candidates(edges: np.ndarray, width: int, height: int, min_area: float, variant_idx: int) -> list[Candidate]:
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    candidates: list[np.ndarray] = []
+def quad_bbox_iou(quad_a: np.ndarray, quad_b: np.ndarray) -> float:
+    a = order_corners(quad_a)
+    b = order_corners(quad_b)
+    ax0, ay0 = np.min(a, axis=0)
+    ax1, ay1 = np.max(a, axis=0)
+    bx0, by0 = np.min(b, axis=0)
+    bx1, by1 = np.max(b, axis=0)
 
-    for cnt in contours:
+    inter_x0 = max(float(ax0), float(bx0))
+    inter_y0 = max(float(ay0), float(by0))
+    inter_x1 = min(float(ax1), float(bx1))
+    inter_y1 = min(float(ay1), float(by1))
+    inter_w = max(0.0, inter_x1 - inter_x0)
+    inter_h = max(0.0, inter_y1 - inter_y0)
+    inter_area = inter_w * inter_h
+    area_a = max(0.0, float(ax1 - ax0)) * max(0.0, float(ay1 - ay0))
+    area_b = max(0.0, float(bx1 - bx0)) * max(0.0, float(by1 - by0))
+    union = area_a + area_b - inter_area
+    if union <= 0.0:
+        return 0.0
+    return inter_area / union
+
+
+def non_max_suppression_candidates(
+    candidates: list[Candidate],
+    *,
+    max_iou: float = 0.72,
+    max_candidates: int = 24,
+) -> list[Candidate]:
+    kept: list[Candidate] = []
+    for candidate in candidates:
+        if any(quad_bbox_iou(candidate.quad, kept_candidate.quad) > max_iou for kept_candidate in kept):
+            continue
+        kept.append(candidate)
+        if len(kept) >= max_candidates:
+            break
+    return kept
+
+
+def contour_candidate_has_marker_contrast(
+    image: np.ndarray,
+    quad: np.ndarray,
+    *,
+    work_size: int = 96,
+    min_stddev: float = 24.0,
+) -> bool:
+    cutout = warp_square_cutout(image, quad, work_size)
+    gray = cv2.cvtColor(cutout, cv2.COLOR_BGR2GRAY) if cutout.ndim == 3 else cutout
+    center = gray[work_size // 8 : work_size - work_size // 8, work_size // 8 : work_size - work_size // 8]
+    if center.size == 0:
+        center = gray
+    return float(np.std(center)) >= min_stddev
+
+
+def find_contour_candidates(
+    mask: np.ndarray,
+    width: int,
+    height: int,
+    min_area: float,
+    variant_idx: int,
+    validation_image: np.ndarray | None = None,
+) -> list[Candidate]:
+    contour_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), dtype=np.uint8))
+    contours, hierarchy = cv2.findContours(contour_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    candidates: list[np.ndarray] = []
+    if hierarchy is None:
+        return []
+    hierarchy_items = hierarchy[0]
+    contour_min_area = max(min_area, 0.05 * float(width * height))
+
+    for idx, cnt in enumerate(contours):
+        if hierarchy_items[idx][2] == -1:
+            continue
         peri = cv2.arcLength(cnt, True)
         if peri <= 0:
             continue
@@ -195,14 +574,23 @@ def find_contour_candidates(edges: np.ndarray, width: int, height: int, min_area
             if len(approx) != 4:
                 continue
             approx = approx.reshape(-1, 2).astype(np.float32)
-            if cv2.contourArea(approx) < min_area:
+            if cv2.contourArea(approx) < contour_min_area:
+                continue
+            x, y, w, h = cv2.boundingRect(approx.astype(np.int32))
+            aspect_ratio = float(max(w, h)) / max(float(min(w, h)), 1.0)
+            if aspect_ratio > 4.0:
                 continue
             if not cv2.isContourConvex(approx.astype(np.int32)):
                 continue
             if is_valid_quad(approx, width, height, min_area):
+                if validation_image is not None and not contour_candidate_has_marker_contrast(validation_image, approx):
+                    continue
                 candidates.append(order_corners(approx))
 
-    return [Candidate(quad=quad, source="contour", variant_idx=variant_idx) for quad in dedupe_candidates(candidates)]
+    return [
+        Candidate(quad=quad, source="adaptive_contour", variant_idx=variant_idx)
+        for quad in dedupe_candidates(candidates)
+    ]
 
 
 def line_to_abc(line: Sequence[float]) -> np.ndarray | None:
@@ -283,6 +671,159 @@ def intersect_lines(line1: np.ndarray, line2: np.ndarray) -> np.ndarray | None:
     x = (b1 * c2 - b2 * c1) / det
     y = (c1 * a2 - c2 * a1) / det
     return np.array([x, y], dtype=np.float32)
+
+
+def angle_delta_deg(angle_a: float, angle_b: float) -> float:
+    return abs(((angle_a - angle_b + 90.0) % 180.0) - 90.0)
+
+
+def point_line_distance(point: np.ndarray, line_abc: np.ndarray) -> float:
+    return abs(float(line_abc[0] * point[0] + line_abc[1] * point[1] + line_abc[2]))
+
+
+def line_segment_overlap_fraction(edge_start: np.ndarray, edge_end: np.ndarray, line: np.ndarray) -> float:
+    edge = edge_end - edge_start
+    edge_len = float(np.linalg.norm(edge))
+    if edge_len < 1e-6:
+        return 0.0
+    axis = edge / edge_len
+    line_pts = line.reshape(2, 2).astype(np.float32)
+    projections = (line_pts - edge_start) @ axis
+    overlap = max(0.0, min(edge_len, float(np.max(projections))) - max(0.0, float(np.min(projections))))
+    return overlap / edge_len
+
+
+def contour_side_line(quad: np.ndarray, edge_idx: int) -> np.ndarray | None:
+    p0 = quad[edge_idx]
+    p1 = quad[(edge_idx + 1) % 4]
+    return line_to_abc((p0[0], p0[1], p1[0], p1[1]))
+
+
+def best_hough_line_for_contour_side(
+    quad: np.ndarray,
+    edge_idx: int,
+    lines: np.ndarray,
+    *,
+    max_angle_delta: float,
+    max_distance: float,
+) -> np.ndarray | None:
+    p0 = quad[edge_idx]
+    p1 = quad[(edge_idx + 1) % 4]
+    edge_angle = math.degrees(math.atan2(float(p1[1] - p0[1]), float(p1[0] - p0[0]))) % 180.0
+    edge_mid = (p0 + p1) * 0.5
+
+    best_line = None
+    best_score = float("inf")
+    for line in lines.astype(np.float32):
+        line_abc = line_to_abc(line)
+        if line_abc is None:
+            continue
+        angle_delta = angle_delta_deg(edge_angle, line_angle_deg(line))
+        if angle_delta > max_angle_delta:
+            continue
+        distances = [
+            point_line_distance(p0, line_abc),
+            point_line_distance(p1, line_abc),
+            point_line_distance(edge_mid, line_abc),
+        ]
+        mean_distance = float(np.mean(distances))
+        if mean_distance > max_distance:
+            continue
+        overlap = line_segment_overlap_fraction(p0, p1, line)
+        if overlap < 0.20:
+            continue
+        score = mean_distance + angle_delta * 0.4 - overlap * 8.0
+        if score < best_score:
+            best_score = score
+            best_line = line_abc
+
+    return best_line
+
+
+def hough_lines_from_debug(debug_items: Sequence[LineDebug]) -> np.ndarray | None:
+    line_sets = []
+    for item in debug_items:
+        if item.family_a is not None:
+            line_sets.append(item.family_a)
+        if item.family_b is not None:
+            line_sets.append(item.family_b)
+    if not line_sets:
+        return None
+    return np.vstack(line_sets).astype(np.float32)
+
+
+def snap_contour_quad_to_hough_lines(
+    quad: np.ndarray,
+    lines: np.ndarray,
+    width: int,
+    height: int,
+    min_area: float,
+) -> np.ndarray | None:
+    quad = order_corners(quad)
+    max_distance = max(8.0, min(width, height) * 0.045)
+    side_lines: list[np.ndarray] = []
+    hough_supported_sides = 0
+
+    for edge_idx in range(4):
+        hough_line = best_hough_line_for_contour_side(
+            quad,
+            edge_idx,
+            lines,
+            max_angle_delta=16.0,
+            max_distance=max_distance,
+        )
+        if hough_line is not None:
+            side_lines.append(hough_line)
+            hough_supported_sides += 1
+            continue
+
+        contour_line = contour_side_line(quad, edge_idx)
+        if contour_line is None:
+            return None
+        side_lines.append(contour_line)
+
+    if hough_supported_sides < 3:
+        return None
+
+    points = [
+        intersect_lines(side_lines[0], side_lines[1]),
+        intersect_lines(side_lines[1], side_lines[2]),
+        intersect_lines(side_lines[2], side_lines[3]),
+        intersect_lines(side_lines[3], side_lines[0]),
+    ]
+    if any(point is None for point in points):
+        return None
+
+    snapped = order_corners(np.asarray(points, dtype=np.float32))
+    if not is_valid_quad(snapped, width, height, min_area):
+        return None
+    if quad_bbox_iou(quad, snapped) < 0.45:
+        return None
+    return snapped
+
+
+def find_contour_hough_hybrid_candidates(
+    contour_candidates: Sequence[Candidate],
+    debug_items: Sequence[LineDebug],
+    width: int,
+    height: int,
+    min_area: float,
+    variant_idx: int,
+) -> list[Candidate]:
+    lines = hough_lines_from_debug(debug_items)
+    if lines is None:
+        return []
+
+    quads = []
+    for candidate in contour_candidates:
+        snapped = snap_contour_quad_to_hough_lines(candidate.quad, lines, width, height, min_area)
+        if snapped is not None:
+            quads.append(snapped)
+
+    return [
+        Candidate(quad=quad, source="contour_hough_hybrid", variant_idx=variant_idx)
+        for quad in dedupe_candidates(quads)
+    ]
 
 
 def dominant_family_quads(
@@ -519,6 +1060,7 @@ def rectification_penalty(quad: np.ndarray) -> float:
     compactness = area / max(diag * diag, 1.0)
     penalty = max(0.0, ratio - 8.0) * 0.5
     penalty += max(0.0, 0.08 - compactness) * 20.0
+    penalty += quad_shape_penalty(quad)
     return penalty
 
 
@@ -531,9 +1073,182 @@ def edge_distance_score(quad: np.ndarray, dist: np.ndarray, grad_mag: np.ndarray
     return mean_dist + grad_penalty + rectification_penalty(quad)
 
 
-def candidate_selection_score(candidate: Candidate, edge_score: float, width: int, height: int) -> float:
+def quad_mask_fraction(mask: np.ndarray, quad: np.ndarray, out_size: int = 64) -> float:
+    dst_square = np.array(
+        [
+            [0, 0],
+            [out_size - 1, 0],
+            [out_size - 1, out_size - 1],
+            [0, out_size - 1],
+        ],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(order_corners(quad).astype(np.float32), dst_square)
+    warped = cv2.warpPerspective(mask, matrix, (out_size, out_size))
+    return float(np.count_nonzero(warped > 0)) / float(out_size * out_size)
+
+
+def quad_edge_clutter_penalty(edges: np.ndarray, quad: np.ndarray, out_size: int = 96) -> float:
+    dst_square = np.array(
+        [
+            [0, 0],
+            [out_size - 1, 0],
+            [out_size - 1, out_size - 1],
+            [0, out_size - 1],
+        ],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(order_corners(quad).astype(np.float32), dst_square)
+    warped = cv2.warpPerspective(edges, matrix, (out_size, out_size))
+    edge_binary = (warped > 0).astype(np.float32)
+
+    margin = max(6, out_size // 12)
+    inner = edge_binary[margin:-margin, margin:-margin]
+    if inner.size == 0:
+        return 0.0
+
+    edge_fraction = float(np.mean(inner))
+    local_density = cv2.boxFilter(inner, ddepth=-1, ksize=(9, 9), normalize=True)
+    dense_patch = float(np.percentile(local_density, 95))
+
+    fraction_penalty = max(0.0, (edge_fraction - 0.18) / 0.22) * 30.0
+    patch_penalty = max(0.0, (dense_patch - 0.42) / 0.45) * 25.0
+    return fraction_penalty + patch_penalty
+
+
+def marker_likeness_score(image: np.ndarray, quad: np.ndarray, out_size: int = 96) -> float:
+    cutout = warp_square_cutout(image, quad, out_size)
+    gray = cv2.cvtColor(cutout, cv2.COLOR_BGR2GRAY)
+    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+    border = max(4, out_size // 12)
+    border_pixels = np.concatenate(
+        [
+            binary[:border, :].reshape(-1),
+            binary[-border:, :].reshape(-1),
+            binary[:, :border].reshape(-1),
+            binary[:, -border:].reshape(-1),
+        ]
+    )
+    border_black = 1.0 - (float(np.mean(border_pixels)) / 255.0)
+
+    inner = binary[border:-border, border:-border]
+    if inner.size == 0:
+        return 0.0
+    black_fraction = 1.0 - (float(np.mean(inner)) / 255.0)
+    balance = 1.0 - min(abs(black_fraction - 0.5) / 0.5, 1.0)
+
+    vertical_edges = cv2.Sobel(binary, cv2.CV_32F, 1, 0, ksize=3)
+    horizontal_edges = cv2.Sobel(binary, cv2.CV_32F, 0, 1, ksize=3)
+    grid_energy = (
+        float(np.mean(np.abs(vertical_edges)))
+        + float(np.mean(np.abs(horizontal_edges)))
+    ) / 255.0
+    grid_energy = min(grid_energy, 1.0)
+
+    color_contrast = black_white_color_contrast_score(cutout)
+    white_border = white_marker_border_score(cutout)
+
+    return (
+        0.25 * border_black
+        + 0.20 * white_border
+        + 0.25 * balance
+        + 0.15 * grid_energy
+        + 0.15 * color_contrast
+    )
+
+
+def white_marker_border_score(cutout: np.ndarray) -> float:
+    out_size = cutout.shape[0]
+    if out_size < 24 or cutout.shape[1] < 24:
+        return 0.0
+
+    lab = cv2.cvtColor(cutout, cv2.COLOR_BGR2LAB)
+    lightness = lab[:, :, 0].astype(np.float32)
+    a = lab[:, :, 1].astype(np.float32) - 128.0
+    b = lab[:, :, 2].astype(np.float32) - 128.0
+    chroma = np.sqrt((a * a) + (b * b))
+
+    border = max(5, out_size // 10)
+    bright_neutral = (lightness > 145.0) & (chroma < 34.0)
+    sides = [
+        bright_neutral[:border, :],
+        bright_neutral[-border:, :],
+        bright_neutral[:, :border],
+        bright_neutral[:, -border:],
+    ]
+    side_scores = [float(np.count_nonzero(side)) / float(side.size) for side in sides]
+    all_sides_white = min(side_scores)
+    average_white = float(np.mean(side_scores))
+
+    inner = lightness[border:-border, border:-border]
+    if inner.size == 0:
+        return 0.0
+    _, inner_binary = cv2.threshold(inner.astype(np.uint8), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    dark_fraction = 1.0 - (float(np.mean(inner_binary)) / 255.0)
+    inner_balance = 1.0 - min(abs(dark_fraction - 0.5) / 0.5, 1.0)
+
+    return 0.55 * all_sides_white + 0.25 * average_white + 0.20 * inner_balance
+
+
+def black_white_color_contrast_score(cutout: np.ndarray) -> float:
+    lab = cv2.cvtColor(cutout, cv2.COLOR_BGR2LAB)
+    lightness = lab[:, :, 0].astype(np.float32)
+    a = lab[:, :, 1].astype(np.float32) - 128.0
+    b = lab[:, :, 2].astype(np.float32) - 128.0
+    chroma = np.sqrt((a * a) + (b * b))
+
+    _, otsu = cv2.threshold(lightness.astype(np.uint8), 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    dark = otsu == 0
+    light = otsu > 0
+    if not np.any(dark) or not np.any(light):
+        return 0.0
+
+    dark_luma = float(np.mean(lightness[dark]))
+    light_luma = float(np.mean(lightness[light]))
+    luma_contrast = min(max((light_luma - dark_luma) / 150.0, 0.0), 1.0)
+
+    neutral = chroma < 24.0
+    neutral_dark = float(np.count_nonzero(dark & neutral)) / max(float(np.count_nonzero(dark)), 1.0)
+    neutral_light = float(np.count_nonzero(light & neutral)) / max(float(np.count_nonzero(light)), 1.0)
+    neutral_pair = min(neutral_dark, neutral_light)
+
+    dark_fraction = float(np.count_nonzero(dark)) / float(dark.size)
+    light_fraction = 1.0 - dark_fraction
+    balance = min(dark_fraction, light_fraction) / 0.35
+    balance = min(max(balance, 0.0), 1.0)
+
+    edges = cv2.morphologyEx(otsu, cv2.MORPH_GRADIENT, np.ones((3, 3), dtype=np.uint8))
+    edge_density = min(float(np.count_nonzero(edges)) / float(edges.size) * 5.0, 1.0)
+
+    return 0.40 * luma_contrast + 0.30 * neutral_pair + 0.20 * balance + 0.10 * edge_density
+
+
+def candidate_selection_score(
+    candidate: Candidate,
+    edge_score: float,
+    width: int,
+    height: int,
+    yellow_mask: np.ndarray | None = None,
+    blue_mask: np.ndarray | None = None,
+    image: np.ndarray | None = None,
+    clutter_edges: np.ndarray | None = None,
+) -> float:
+    color_penalty = 0.0
+    if yellow_mask is not None and np.any(yellow_mask):
+        color_penalty += quad_mask_fraction(yellow_mask, candidate.quad) * 80.0
+    if blue_mask is not None and np.any(blue_mask):
+        color_penalty += quad_mask_fraction(blue_mask, candidate.quad) * 28.0
+    clutter_penalty = 0.0
+    if clutter_edges is not None and np.any(clutter_edges):
+        clutter_penalty = quad_edge_clutter_penalty(clutter_edges, candidate.quad)
+    marker_bonus = 0.0
+    if image is not None:
+        marker_bonus = marker_likeness_score(image, candidate.quad) * 45.0
+
     if candidate.source != "hough_dominant":
-        return edge_score
+        return edge_score + color_penalty + clutter_penalty - marker_bonus
 
     # A single dominant line family can lock onto internal stripes. Prefer the
     # larger projected sign without forcing equal side lengths in image space.
@@ -542,7 +1257,7 @@ def candidate_selection_score(candidate: Candidate, edge_score: float, width: in
     lengths = edge_lengths(candidate.quad)
     side_ratio = float(np.max(lengths) / max(np.min(lengths), 1e-6))
     stripe_penalty = max(0.0, side_ratio - 4.0) * 2.0
-    return edge_score - 180.0 * area_ratio + stripe_penalty
+    return edge_score - 180.0 * area_ratio + stripe_penalty + color_penalty + clutter_penalty - marker_bonus
 
 
 def refine_candidate(
@@ -552,6 +1267,7 @@ def refine_candidate(
     height: int,
     min_area: float,
     reg_weight: float = 0.05,
+    max_nfev: int = 200,
 ) -> np.ndarray:
     initial_quad = order_corners(initial_quad).astype(np.float32)
     initial_quad[:, 0] = np.clip(initial_quad[:, 0], 0.0, width - 1.0)
@@ -571,12 +1287,23 @@ def refine_candidate(
 
         area = polygon_area(quad)
         lengths = edge_lengths(quad)
+        angles = interior_angles_deg(quad)
+        side_ratio = float(np.max(lengths) / max(np.min(lengths), 1e-6))
         convex_penalty = 50.0 if not is_convex_quad(quad) else 0.0
         area_penalty = math.sqrt(max(min_area - area, 0.0))
         length_penalty = 20.0 if np.min(lengths) < 8.0 else 0.0
+        angle_penalty = float(
+            np.sum(
+                np.maximum(0.0, MIN_QUAD_ANGLE_DEG - angles)
+                + np.maximum(0.0, angles - MAX_QUAD_ANGLE_DEG)
+            )
+        )
+        side_ratio_penalty = max(0.0, side_ratio - MAX_QUAD_SIDE_RATIO) * 10.0
         residual.extend([convex_penalty] * 12)
         residual.extend([area_penalty] * 12)
         residual.extend([length_penalty] * 8)
+        residual.extend([angle_penalty] * 4)
+        residual.extend([side_ratio_penalty] * 4)
 
         residual.extend(((quad - initial_quad).reshape(-1) * reg_weight).tolist())
         return np.asarray(residual, dtype=np.float32)
@@ -587,7 +1314,7 @@ def refine_candidate(
         residuals,
         initial_quad.reshape(-1),
         bounds=(lower, upper),
-        max_nfev=200,
+        max_nfev=max_nfev,
     )
     refined = order_corners(result.x.reshape(4, 2))
     if not is_valid_quad(refined, width, height, min_area):
@@ -608,19 +1335,77 @@ def collect_line_debug(image: np.ndarray, edge_variants: list[EdgeArtifacts]) ->
     return debug_items
 
 
-def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResult:
+def fit_aruco_square(image: np.ndarray, deadline: float | None = None) -> FitResult | None:
     height, width = image.shape[:2]
     min_area = max(0.01 * width * height, 400.0)
+    aruco_candidates = detect_aruco_quad_candidates(image, min_area, deadline)
+    if not aruco_candidates:
+        return None
+
+    best_aruco = max(
+        aruco_candidates,
+        key=lambda candidate: marker_likeness_score(image, candidate.quad),
+    )
+    aruco_quad = best_aruco.quad
+    source = best_aruco.source
+    inner_quad = refine_quad_to_inner_black_marker(image, aruco_quad, width, height, min_area)
+    if inner_quad is not None:
+        aruco_quad = inner_quad
+        source = f"{source}:inner_black"
+
+    return FitResult(
+        quad=aruco_quad,
+        score=marker_likeness_score(image, aruco_quad),
+        rejected=[candidate.quad for candidate in aruco_candidates if candidate is not best_aruco],
+        source=source,
+    )
+
+
+def fit_square(
+    image: np.ndarray,
+    edge_variants: list[EdgeArtifacts],
+    deadline: float | None = None,
+) -> FitResult:
+    height, width = image.shape[:2]
+    min_area = max(0.01 * width * height, 400.0)
+    yellow_mask = yellow_pipe_mask(image)
+    blue_mask = blue_water_mask(image)
     all_candidates: list[Candidate] = []
     rejected_debug: list[np.ndarray] = []
 
     for idx, artifacts in enumerate(edge_variants):
-        contour_candidates = find_contour_candidates(artifacts.edges_canny, width, height, min_area, idx)
-        hough_candidates, _ = hough_line_debug(artifacts.edges_canny, width, height, min_area, idx)
+        check_deadline(deadline)
+        contour_candidates = [
+            candidate
+            for contour_mask in artifacts.contour_masks
+            for candidate in find_contour_candidates(
+                contour_mask,
+                width,
+                height,
+                min_area,
+                idx,
+                artifacts.gray,
+            )
+        ]
+        hough_candidates, hough_debug = hough_line_debug(artifacts.edges_canny, width, height, min_area, idx)
         closed_edges = fallback_edge_retry(artifacts)
-        closed_contour_candidates = find_contour_candidates(closed_edges, width, height, min_area, idx)
-        closed_hough_candidates, _ = hough_line_debug(closed_edges, width, height, min_area, idx, closed_edges_used=True)
-        candidates = contour_candidates + hough_candidates + closed_contour_candidates + closed_hough_candidates
+        closed_hough_candidates, closed_hough_debug = hough_line_debug(
+            closed_edges,
+            width,
+            height,
+            min_area,
+            idx,
+            closed_edges_used=True,
+        )
+        hybrid_candidates = find_contour_hough_hybrid_candidates(
+            contour_candidates,
+            (hough_debug, closed_hough_debug),
+            width,
+            height,
+            min_area,
+            idx,
+        )
+        candidates = contour_candidates + hybrid_candidates + hough_candidates + closed_hough_candidates
 
         for candidate in candidates:
             candidate.score = edge_distance_score(candidate.quad, artifacts.dist, artifacts.grad_mag)
@@ -630,21 +1415,51 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
         raise RuntimeError("No valid square candidate found")
 
     all_candidates.sort(
-        key=lambda c: candidate_selection_score(c, c.score if c.score is not None else float("inf"), width, height)
+        key=lambda c: candidate_selection_score(
+            c,
+            c.score if c.score is not None else float("inf"),
+            width,
+            height,
+            yellow_mask,
+            blue_mask,
+            image,
+            edge_variants[c.variant_idx].edges_canny,
+        )
     )
+    all_candidates = non_max_suppression_candidates(all_candidates)
     shortlist = all_candidates[: min(12, len(all_candidates))]
+    if deadline is not None:
+        shortlist = shortlist[: min(4, len(shortlist))]
 
     best_quad = None
     best_score = float("inf")
     best_selection_score = float("inf")
 
     for candidate in shortlist:
+        check_deadline(deadline)
         artifacts = edge_variants[candidate.variant_idx]
         reg_weight = 0.20 if candidate.source == "hough_dominant" else 0.05
-        refined = refine_candidate(candidate.quad, artifacts.dist, width, height, min_area, reg_weight=reg_weight)
+        refined = refine_candidate(
+            candidate.quad,
+            artifacts.dist,
+            width,
+            height,
+            min_area,
+            reg_weight=reg_weight,
+            max_nfev=40 if deadline is not None else 200,
+        )
         refined_score = edge_distance_score(refined, artifacts.dist, artifacts.grad_mag)
         refined_candidate = Candidate(quad=refined, source=candidate.source, variant_idx=candidate.variant_idx)
-        selection_score = candidate_selection_score(refined_candidate, refined_score, width, height)
+        selection_score = candidate_selection_score(
+            refined_candidate,
+            refined_score,
+            width,
+            height,
+            yellow_mask,
+            blue_mask,
+            image,
+            artifacts.edges_canny,
+        )
         if selection_score < best_selection_score:
             if best_quad is not None:
                 rejected_debug.append(best_quad)
@@ -657,7 +1472,15 @@ def fit_square(image: np.ndarray, edge_variants: list[EdgeArtifacts]) -> FitResu
     if best_quad is None:
         raise RuntimeError("Candidate refinement failed")
 
-    return FitResult(quad=best_quad, score=best_score, rejected=rejected_debug)
+    source = "hough"
+    inner_quad = refine_quad_to_inner_black_marker(image, best_quad, width, height, min_area)
+    if inner_quad is not None:
+        rejected_debug.append(best_quad)
+        best_quad = inner_quad
+        best_score = edge_distance_score(best_quad, edge_variants[0].dist, edge_variants[0].grad_mag)
+        source = "hough:inner_black"
+
+    return FitResult(quad=best_quad, score=best_score, rejected=rejected_debug, source=source)
 
 
 def warp_square_cutout(image: np.ndarray, quad: np.ndarray, out_size: int) -> np.ndarray:
@@ -672,6 +1495,68 @@ def warp_square_cutout(image: np.ndarray, quad: np.ndarray, out_size: int) -> np
     )
     matrix = cv2.getPerspectiveTransform(quad.astype(np.float32), dst_square)
     return cv2.warpPerspective(image, matrix, (out_size, out_size))
+
+
+def refine_quad_to_inner_black_marker(
+    image: np.ndarray,
+    quad: np.ndarray,
+    width: int,
+    height: int,
+    min_area: float,
+    *,
+    work_size: int = 256,
+) -> np.ndarray | None:
+    ordered = order_corners(quad)
+    cutout = warp_square_cutout(image, ordered, work_size)
+    gray = cv2.cvtColor(cutout, cv2.COLOR_BGR2GRAY)
+    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, dark_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel)
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8))
+
+    ys, xs = np.nonzero(dark_mask > 0)
+    if len(xs) < work_size * work_size * 0.04:
+        return None
+
+    x0, x1 = np.percentile(xs, [1.5, 98.5])
+    y0, y1 = np.percentile(ys, [1.5, 98.5])
+    box_w = float(x1 - x0)
+    box_h = float(y1 - y0)
+    if box_w < work_size * 0.35 or box_h < work_size * 0.35:
+        return None
+
+    # If the detected dark region already fills the warp, the original quad is
+    # probably on the black marker and there is nothing useful to crop inward.
+    margin = min(x0, y0, work_size - 1 - x1, work_size - 1 - y1)
+    if margin < work_size * 0.015:
+        return None
+
+    pad = work_size * 0.012
+    x0 = max(0.0, float(x0) - pad)
+    y0 = max(0.0, float(y0) - pad)
+    x1 = min(float(work_size - 1), float(x1) + pad)
+    y1 = min(float(work_size - 1), float(y1) + pad)
+
+    inner_warp_quad = np.array(
+        [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+        dtype=np.float32,
+    )
+    dst_square = np.array(
+        [[0, 0], [work_size - 1, 0], [work_size - 1, work_size - 1], [0, work_size - 1]],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(ordered.astype(np.float32), dst_square)
+    inverse = np.linalg.inv(matrix)
+    inner = cv2.perspectiveTransform(inner_warp_quad[None, :, :], inverse)[0]
+    inner = order_corners(inner)
+
+    if not is_valid_quad(inner, width, height, min_area * 0.25):
+        return None
+    if polygon_area(inner) > polygon_area(ordered) * 0.96:
+        return None
+    return inner.astype(np.float32)
 
 
 def _draw_line_set(canvas: np.ndarray, lines: np.ndarray | None, color: tuple[int, int, int], thickness: int) -> None:
@@ -693,7 +1578,7 @@ def _draw_hough_debug(image: np.ndarray, debug_items: list[LineDebug]) -> np.nda
     return canvas
 
 
-def _draw_detected_quad(image: np.ndarray, quad: np.ndarray | None) -> np.ndarray:
+def _draw_detected_quad(image: np.ndarray, quad: np.ndarray | None, source: str | None = None) -> np.ndarray:
     canvas = image.copy()
     if quad is None:
         cv2.putText(
@@ -710,6 +1595,17 @@ def _draw_detected_quad(image: np.ndarray, quad: np.ndarray | None) -> np.ndarra
 
     points = np.rint(quad).astype(np.int32)
     cv2.polylines(canvas, [points], True, (0, 255, 0), 3, cv2.LINE_AA)
+    if source:
+        cv2.putText(
+            canvas,
+            source,
+            (24, 48),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
     for idx, point in enumerate(points):
         cv2.circle(canvas, tuple(int(value) for value in point), 7, (0, 0, 255), -1, cv2.LINE_AA)
         cv2.putText(
@@ -742,6 +1638,8 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         preprocess_mode: EnhancementMode = None,
         debug: bool = False,
         debug_dir: Path | str = Path("data/debug"),
+        experimental_color_repaint_retry: bool = False,
+        max_processing_seconds: float | None = None,
     ) -> None:
         if not output_queue:
             raise ValueError("Module output_queue cannot be empty.")
@@ -754,6 +1652,8 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         self.preprocess_mode = preprocess_mode
         self.debug = debug
         self.debug_dir = Path(debug_dir)
+        self.experimental_color_repaint_retry = experimental_color_repaint_retry
+        self.max_processing_seconds = max_processing_seconds
         if self.debug:
             self.debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -766,6 +1666,10 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         return self.debug_dir / "marker_hough_lines.png"
 
     @property
+    def _debug_all_hough_lines_path(self) -> Path:
+        return self.debug_dir / "marker_hough_lines_all_variants.png"
+
+    @property
     def _debug_detected_quad_path(self) -> Path:
         return self.debug_dir / "marker_detected_quad.png"
 
@@ -773,22 +1677,60 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
     def _debug_cutout_path(self) -> Path:
         return self.debug_dir / "marker_rectified_cutout.png"
 
+    @property
+    def _debug_yellow_mask_path(self) -> Path:
+        return self.debug_dir / "marker_yellow_suppression_mask.png"
+
+    @property
+    def _debug_color_mask_path(self) -> Path:
+        return self.debug_dir / "marker_color_suppression_mask.png"
+
+    @property
+    def _debug_blue_mask_path(self) -> Path:
+        return self.debug_dir / "marker_blue_water_mask.png"
+
+    @property
+    def _debug_color_repaint_path(self) -> Path:
+        return self.debug_dir / "marker_color_repaint_retry_input.png"
+
     def _write_debug_images(
         self,
         image: np.ndarray,
         line_debug: list[LineDebug],
         quad: np.ndarray | None,
         cutout: np.ndarray | None,
+        source: str | None = None,
     ) -> None:
         if not self.debug:
             return
 
         _write_debug_image(self._debug_input_path, image)
-        _write_debug_image(self._debug_hough_lines_path, _draw_hough_debug(image, line_debug))
-        _write_debug_image(self._debug_detected_quad_path, _draw_detected_quad(image, quad))
+        _write_debug_image(self._debug_yellow_mask_path, yellow_pipe_mask(image))
+        blue_mask = blue_water_mask(image)
+        _write_debug_image(self._debug_blue_mask_path, blue_mask)
+        _write_debug_image(self._debug_color_mask_path, color_suppression_mask(image))
+        _write_debug_image(self._debug_hough_lines_path, _draw_hough_debug(image, line_debug[:4]))
+        _write_debug_image(self._debug_all_hough_lines_path, _draw_hough_debug(image, line_debug))
+        _write_debug_image(self._debug_detected_quad_path, _draw_detected_quad(image, quad, source))
         if cutout is None:
             cutout = np.zeros((self.out_size, self.out_size, image.shape[2]), dtype=image.dtype)
         _write_debug_image(self._debug_cutout_path, cutout)
+
+    def _detect_fit(self, image: np.ndarray) -> tuple[FitResult, list[LineDebug]]:
+        deadline = (
+            time.monotonic() + self.max_processing_seconds
+            if self.max_processing_seconds is not None and self.max_processing_seconds > 0
+            else None
+        )
+        aruco_fit = fit_aruco_square(image, deadline)
+        if aruco_fit is not None:
+            return aruco_fit, []
+        if deadline is not None:
+            raise MarkerProcessingTimeout("marker fallback skipped to stay under the image time limit")
+
+        _, edge_variants = build_edge_variants(image, self.preprocess_mode, deadline)
+        line_debug = collect_line_debug(image, edge_variants) if self.debug else []
+        return fit_square(image, edge_variants, deadline), line_debug
 
     async def process(
         self,
@@ -800,23 +1742,47 @@ class MarkerRectificationModule(BaseModule[VideoFrame | np.ndarray]):
         validate_color_image(image)
 
         line_debug: list[LineDebug] = []
+        detection_image = image
+        color_repaint_retry_used = False
         try:
-            _, edge_variants = build_edge_variants(image, self.preprocess_mode)
-            if self.debug:
-                line_debug = collect_line_debug(image, edge_variants)
-            fit_result = fit_square(image, edge_variants)
+            fit_result, line_debug = self._detect_fit(image)
         except RuntimeError as exc:
-            self._write_debug_images(image, line_debug, quad=None, cutout=None)
-            logger.warning("Dropping frame without detected marker: %s", exc)
-            return None
+            if not self.experimental_color_repaint_retry:
+                self._write_debug_images(image, line_debug, quad=None, cutout=None)
+                logger.warning("Dropping frame without detected marker: %s", exc)
+                return None
 
-        cutout = warp_square_cutout(image, fit_result.quad, self.out_size)
-        self._write_debug_images(image, line_debug, quad=fit_result.quad, cutout=cutout)
+            repainted = repaint_color_suppression_regions(image)
+            if self.debug:
+                _write_debug_image(self._debug_color_repaint_path, repainted)
+            try:
+                fit_result, line_debug = self._detect_fit(repainted)
+                detection_image = repainted
+                color_repaint_retry_used = True
+                logger.info("Marker detected after experimental color repaint retry.")
+            except RuntimeError as retry_exc:
+                self._write_debug_images(image, line_debug, quad=None, cutout=None)
+                logger.warning(
+                    "Dropping frame without detected marker after experimental color repaint retry: %s",
+                    retry_exc,
+                )
+                return None
+
+        cutout = warp_square_cutout(detection_image, fit_result.quad, self.out_size)
+        self._write_debug_images(
+            detection_image,
+            line_debug,
+            quad=fit_result.quad,
+            cutout=cutout,
+            source=fit_result.source,
+        )
         metadata: dict[str, Any] = dict(message.metadata)
         metadata.update(
             {
                 "quad": fit_result.quad.tolist(),
                 "score": float(fit_result.score),
+                "quad_source": fit_result.source,
+                "color_repaint_retry_used": color_repaint_retry_used,
                 "input_shape": tuple(int(value) for value in image.shape),
             }
         )

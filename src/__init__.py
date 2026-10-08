@@ -2,14 +2,14 @@ from .logging_config import ColorFormatter, configure_logging
 from .loop import EmptyInputSource, InputSource, ProcessorLoop, SignalStopper
 from .messages import Message, RoutedMessage
 from .modules import (
+    ArucoDetection,
+    ArucoDetectionModule,
     BaseModule,
     FrameRateLoggerModule,
-    GMMColorMaskModule,
     ImageEnhancementModule,
     MarkerRectificationModule,
     ModuleContext,
     ModuleOutput,
-    QueueFanoutModule,
 )
 from .video import LoopingVideoSource, VideoFrame, VideoSourceError
 from .processor import (
@@ -22,6 +22,8 @@ from .processor import (
 
 __all__ = [
     "AsyncProcessor",
+    "ArucoDetection",
+    "ArucoDetectionModule",
     "BaseModule",
     "ColorFormatter",
     "DuplicateModuleError",
@@ -29,7 +31,6 @@ __all__ = [
     "configure_logging",
     "EmptyInputSource",
     "FrameRateLoggerModule",
-    "GMMColorMaskModule",
     "ImageEnhancementModule",
     "InputSource",
     "LoopingVideoSource",
@@ -39,7 +40,6 @@ __all__ = [
     "ModuleOutput",
     "ProcessorLoop",
     "ProcessorError",
-    "QueueFanoutModule",
     "RoutedMessage",
     "SignalStopper",
     "UnknownQueueError",

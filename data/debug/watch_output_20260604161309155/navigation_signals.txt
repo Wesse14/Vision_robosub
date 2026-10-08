@@ -1,0 +1,2 @@
+image	signal	combined_score	elapsed_ms	marker_id	aruco_ids	mask_match_id	mask_match_score	grid_match_id	grid_match_score	reason
+foto_00223.jpg	NEXT	0.926	803.2	63		63	0.926	63	1.000	strong mask and grid agreement

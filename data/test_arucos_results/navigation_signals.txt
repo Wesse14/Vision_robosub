@@ -1,0 +1,2 @@
+image	signal	combined_score	elapsed_ms	marker_id	aruco_ids	mask_match_id	mask_match_score	grid_match_id	grid_match_score	reason
+latest.jpg	SKIPPED_TIMEOUT	0.000	816.1				0.000		0.000	marker fallback skipped to stay under the configured time limit
