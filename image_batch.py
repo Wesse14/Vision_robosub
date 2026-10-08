@@ -36,7 +36,9 @@ PIPELINES = ("enhance", "marker", "aruco", "full")
 GENERATED_FRAME_PREFIX = "video_frame__"
 QUAD_SUMMARY_DIR_NAME = "_marker_detected_quads"
 NAVIGATION_SUMMARY_FILENAME = "navigation_signals.txt"
-
+NAVIGATION_LOG_FILENAME = "navigation_signals_log.txt"
+GOOD_MARKER_LOG_FILENAME = "detected_markers_log.txt"
+GOOD_MARKER_LIVE_FILENAME = "detected_markers_seen.txt"
 
 @dataclass(frozen=True, slots=True)
 class NavigationSummary:
@@ -104,7 +106,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--max-image-seconds",
-        default=1.5,
+        default=4,
         type=float,
         help="Skip an image once processing exceeds this many seconds. Use 0 to disable.",
     )
@@ -346,6 +348,146 @@ def navigation_summary_text(summaries: Sequence[NavigationSummary]) -> str:
 
 def write_navigation_summary(output_dir: Path, summaries: Sequence[NavigationSummary]) -> None:
     write_text(output_dir / NAVIGATION_SUMMARY_FILENAME, navigation_summary_text(summaries))
+
+
+def append_navigation_log(output_dir: Path, summary: NavigationSummary) -> None:
+    log_path = output_dir / NAVIGATION_LOG_FILENAME
+    write_header = not log_path.exists()
+
+    rows = []
+
+    if write_header:
+        rows.append(
+            "\t".join(
+                [
+                    "timestamp",
+                    "image",
+                    "signal",
+                    "combined_score",
+                    "elapsed_ms",
+                    "marker_id",
+                    "aruco_ids",
+                    "mask_match_id",
+                    "mask_match_score",
+                    "grid_match_id",
+                    "grid_match_score",
+                    "reason",
+                ]
+            )
+        )
+
+    rows.append(
+        "\t".join(
+            [
+                time.strftime("%Y-%m-%d %H:%M:%S"),
+                summary.image,
+                summary.signal,
+                f"{summary.combined_score:.3f}",
+                f"{summary.elapsed_ms:.1f}",
+                format_optional_int(summary.marker_id),
+                format_ids(summary.aruco_ids),
+                format_optional_int(summary.mask_match_id),
+                f"{summary.mask_match_score:.3f}",
+                format_optional_int(summary.grid_match_id),
+                f"{summary.grid_match_score:.3f}",
+                summary.reason,
+            ]
+        )
+    )
+
+    with log_path.open("a", encoding="utf-8") as file:
+        file.write("\n".join(rows) + "\n")
+
+
+def ensure_navigation_log(output_dir: Path) -> None:
+    log_path = output_dir / NAVIGATION_LOG_FILENAME
+    if log_path.exists():
+        return
+
+    write_text(
+        log_path,
+        "\t".join(
+            [
+                "timestamp",
+                "image",
+                "signal",
+                "combined_score",
+                "elapsed_ms",
+                "marker_id",
+                "aruco_ids",
+                "mask_match_id",
+                "mask_match_score",
+                "grid_match_id",
+                "grid_match_score",
+                "reason",
+            ]
+        )
+        + "\n",
+    )
+
+
+def is_good_marker_summary(summary: NavigationSummary) -> bool:
+    if summary.marker_id is None:
+        return False
+    if summary.signal in {"NO_MARKER", "SKIPPED_TIMEOUT"}:
+        return False
+    return True
+
+
+def append_good_marker_log(output_dir: Path, summary: NavigationSummary) -> None:
+    if not is_good_marker_summary(summary):
+        return
+
+    log_path = output_dir / GOOD_MARKER_LOG_FILENAME
+    seen_path = output_dir / GOOD_MARKER_LIVE_FILENAME
+    write_header = not log_path.exists()
+
+    rows = []
+    if write_header:
+        rows.append(
+            "\t".join(
+                [
+                    "timestamp",
+                    "marker_id",
+                    "signal",
+                    "combined_score",
+                    "image",
+                    "reason",
+                ]
+            )
+        )
+
+    rows.append(
+        "\t".join(
+            [
+                time.strftime("%Y-%m-%d %H:%M:%S"),
+                format_optional_int(summary.marker_id),
+                summary.signal,
+                f"{summary.combined_score:.3f}",
+                summary.image,
+                summary.reason,
+            ]
+        )
+    )
+
+    with log_path.open("a", encoding="utf-8") as file:
+        file.write("\n".join(rows) + "\n")
+
+    seen_ids: list[int] = []
+    if seen_path.exists():
+        for value in seen_path.read_text(encoding="utf-8").replace(",", " ").split():
+            try:
+                seen_ids.append(int(value))
+            except ValueError:
+                pass
+
+    if summary.marker_id not in seen_ids:
+        seen_ids.append(summary.marker_id)
+
+    seen_path.write_text(
+        " ".join(str(marker_id) for marker_id in seen_ids) + "\n",
+        encoding="utf-8",
+    )
 
 
 def image_time_limit_seconds(args: argparse.Namespace) -> float | None:
@@ -753,12 +895,15 @@ async def run_batch(args: argparse.Namespace) -> None:
     refresh_video_frames(args.video_dir, args.input_dir, args.frames_per_video)
     if args.watch:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_navigation_log(args.output_dir)
         summary_path = args.output_dir / NAVIGATION_SUMMARY_FILENAME
         if not summary_path.exists():
             write_navigation_summary(args.output_dir, [])
     else:
         clear_output_dir(args.output_dir)
+        ensure_navigation_log(args.output_dir)
     processed: dict[Path, tuple[int, int]] = {}
+
     summaries: list[NavigationSummary] = []
 
     while True:
@@ -788,6 +933,8 @@ async def run_batch(args: argparse.Namespace) -> None:
             if summary is not None:
                 summaries = [existing for existing in summaries if existing.image != summary.image]
                 summaries.append(summary)
+                append_navigation_log(args.output_dir, summary)
+                append_good_marker_log(args.output_dir, summary)
                 summaries.sort(key=lambda summary: summary.image)
                 write_navigation_summary(args.output_dir, summaries)
 
@@ -805,3 +952,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
